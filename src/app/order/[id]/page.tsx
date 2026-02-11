@@ -127,6 +127,7 @@ export default function OrderPage({
   } | null>(null);
   const [flyPhase, setFlyPhase] = useState<"from" | "to">("from");
   const orderCardRef = useRef<HTMLDivElement>(null);
+  const flyProcessedRef = useRef(false);
 
   useEffect(() => {
     if (!flyingItem) return;
@@ -179,6 +180,7 @@ export default function OrderPage({
   // --- Handlers ---
 
   const handleWantThis = (menuItem: MenuItem, e: React.MouseEvent) => {
+    flyProcessedRef.current = false;
     const row = (e.target as HTMLElement).closest("[data-menu-row]");
     const img = row?.querySelector("img");
     const fromEl = img || row;
@@ -221,11 +223,11 @@ export default function OrderPage({
   };
 
   const handleFlyEnd = () => {
-    if (flyingItem) {
-      handleAddFromMenu(flyingItem.menuItem);
-      setFlyingItem(null);
-      setFlyPhase("from");
-    }
+    if (flyProcessedRef.current || !flyingItem) return;
+    flyProcessedRef.current = true;
+    handleAddFromMenu(flyingItem.menuItem);
+    setFlyingItem(null);
+    setFlyPhase("from");
   };
 
   const handleAddManual = async (e: React.FormEvent) => {
@@ -436,7 +438,7 @@ export default function OrderPage({
                     {user.firstName[0]}
                   </div>
                 )}
-                <span className="text-sm text-muted-foreground">
+                <span className="text-sm text-muted-foreground whitespace-nowrap">
                   {user.firstName} {user.lastName || ""}
                 </span>
               </div>
