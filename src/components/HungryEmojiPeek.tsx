@@ -44,10 +44,11 @@ export default function HungryEmojiPeek() {
     <>
       {/* Левый: всегда left:0, скрыт = -100vw, показан = 0 */}
       <div
-        className="fixed left-0 z-40 transition-[transform] duration-500 ease-out will-change-transform"
+        className="fixed left-0 z-40 transition-[transform,opacity] duration-600 ease-in-out will-change-transform"
         style={{
           ...topStyle,
           transform: `translateX(${side === "left" && visible ? "0" : "-100vw"}) translateY(-50%)`,
+          opacity: side === "left" && visible ? 1 : 0,
         }}
         aria-hidden
       >
@@ -55,10 +56,11 @@ export default function HungryEmojiPeek() {
       </div>
       {/* Правый: всегда right:0, скрыт = 100vw, показан = 0 */}
       <div
-        className="fixed right-0 z-40 transition-[transform] duration-500 ease-out will-change-transform"
+        className="fixed right-0 z-40 transition-[transform,opacity] duration-600 ease-in-out will-change-transform"
         style={{
           ...topStyle,
           transform: `translateX(${side === "right" && visible ? "0" : "100vw"}) translateY(-50%)`,
+          opacity: side === "right" && visible ? 1 : 0,
         }}
         aria-hidden
       >
