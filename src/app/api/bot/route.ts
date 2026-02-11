@@ -48,7 +48,9 @@ bot.command("start", async (ctx) => {
         await ctx.reply("Ссылка устарела или\u00A0уже использована. Попробуй ещё раз на\u00A0сайте.");
       }
     } catch (err) {
-      console.error("Auth token confirmation error:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      const code = err && typeof (err as { code?: string }).code === "string" ? (err as { code: string }).code : "";
+      console.error("Auth token confirmation error:", message, code, err);
       await ctx.reply("Что-то пошло не\u00A0так. Попробуй ещё раз.");
     }
     return;

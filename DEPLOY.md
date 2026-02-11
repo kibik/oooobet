@@ -78,4 +78,23 @@ https://ТВОЙ_РАЙЛВЕЙ_URL/api/bot/setup?secret=ТВОЙ_TELEGRAM_BOT_T
 - Локально: установи Postgres и создай базу, в `.env` укажи `DATABASE_URL=postgresql://...`
 - Либо создай в Railway отдельный dev-проект с PostgreSQL и подставь его `DATABASE_URL` в локальный `.env`
 
-Миграции при деплое применяются автоматически (`prisma migrate deploy` в `npm run build`).
+**Если подключаешься к БД на Railway с ноутбука:** в `.env` обязательно используй **публичный** URL. В Railway у PostgreSQL есть два URL:
+- **Public** — хост вида `roundhouse.proxy.rlwy.net` (или другой) — подходит для локального запуска.
+- **Private** — хост `postgres.railway.internal` — работает **только** между сервисами внутри одного проекта на Railway.
+
+Если в `DATABASE_URL` указан `postgres.railway.internal`, с локальной машины будет ошибка: *"Can't reach database server at postgres.railway.internal:5432"*. Скопируй из Railway переменную **Public** URL (в карточке PostgreSQL → Variables / Connect → Connection URL с публичным хостом).
+
+Миграции при деплое применяются автоматически (`prisma migrate deploy` в `npm run start`).
+
+---
+
+## 8. Ошибки входа через бота
+
+- **500 на сайте при нажатии «Войти через Telegram»** (запрос к `/api/auth/token`) или **бот отвечает «Что-то пошло не так. Попробуй ещё раз.»** после перехода по ссылке из кнопки — обычно одна и та же причина: БД или миграции.
+
+Что проверить:
+
+1. **Railway → сервис приложения → Variables:** есть `DATABASE_URL`. Если приложение и PostgreSQL в **одном проекте** Railway, можно использовать переменную из PostgreSQL (Reference) — для сервисов внутри проекта подойдёт и internal URL. Если ошибка *"Can't reach database server at postgres.railway.internal:5432"* на **деплое** (не локально): проверь, что БД в том же проекте, не приостановлена, и при необходимости переподключи ссылку на переменные PostgreSQL.
+2. **Railway → Deployments:** последний деплой успешен; при старте выполняется `prisma migrate deploy` — таблицы `User` и `AuthToken` должны быть созданы.
+3. **Логи (View Logs):** при нажатии «Войти через Telegram» ищи строку `Create auth token error:`; при ответе бота «Что-то пошло не так» — `Auth token confirmation error:`. По тексту ошибки (и коду Prisma, если есть) можно понять: нет таблицы, нет подключения к БД и т.д.
+4. После изменений в `prisma/schema.prisma` или миграциях сделай коммит и пуш — Railway пересоберёт приложение и при старте применит миграции.
