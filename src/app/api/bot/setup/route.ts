@@ -36,10 +36,23 @@ export async function GET(req: NextRequest) {
       webhook: webhookUrl,
       info,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("Webhook setup error:", error);
+    const message =
+      error instanceof Error ? error.message : String(error);
+    const desc =
+      error &&
+      typeof error === "object" &&
+      "description" in error &&
+      typeof (error as { description: string }).description === "string"
+        ? (error as { description: string }).description
+        : null;
     return NextResponse.json(
-      { error: "Failed to set webhook" },
+      {
+        error: "Failed to set webhook",
+        reason: message,
+        ...(desc && { telegram: desc }),
+      },
       { status: 500 }
     );
   }
