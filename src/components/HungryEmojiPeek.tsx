@@ -3,21 +3,20 @@
 import { useEffect, useState } from "react";
 
 const EMOJIS = ["🤤", "🍕", "🍔", "🌮", "🍟", "🥡"];
-const INTERVAL_MS = 15_000;
+const INTERVAL_MS = 10_000;
 const VISIBLE_MS = 3_000;
 
 export default function HungryEmojiPeek() {
   const [visible, setVisible] = useState(false);
-  const [rightEmojis, setRightEmojis] = useState<string[]>([]);
-  const [leftEmojis, setLeftEmojis] = useState<string[]>([]);
-
-  const shuffle = (arr: string[], n: number) =>
-    [...arr].sort(() => Math.random() - 0.5).slice(0, n);
+  const [emoji, setEmoji] = useState("");
+  const [side, setSide] = useState<"left" | "right">("right");
+  const [topPercent, setTopPercent] = useState(50);
 
   useEffect(() => {
     const show = () => {
-      setRightEmojis(shuffle(EMOJIS, 3));
-      setLeftEmojis(shuffle(EMOJIS, 2));
+      setEmoji(EMOJIS[Math.floor(Math.random() * EMOJIS.length)]!);
+      setSide(Math.random() >= 0.5 ? "left" : "right");
+      setTopPercent(15 + Math.random() * 70);
       setVisible(true);
       const t = window.setTimeout(() => setVisible(false), VISIBLE_MS);
       return () => window.clearTimeout(t);
@@ -31,39 +30,27 @@ export default function HungryEmojiPeek() {
     };
   }, []);
 
-  return (
-    <>
-      <div
-        className="fixed top-[18%] right-0 z-40 pr-0 transition-[transform] duration-500 ease-out will-change-transform"
-        style={{
-          transform: visible ? "translateX(0)" : "translateX(100%)",
-        }}
-        aria-hidden
-      >
-        <div className="flex flex-col gap-0.5 rounded-l-xl bg-background/95 px-2.5 py-2.5 shadow-lg border border-l-0 border-border">
-          {rightEmojis.map((e, i) => (
-            <span key={`r-${i}`} className="text-2xl leading-none">
-              {e}
-            </span>
-          ))}
-        </div>
-      </div>
+  const fromRight = side === "right";
+  const x = visible ? "0" : fromRight ? "110%" : "-110%";
 
-      <div
-        className="fixed top-[58%] left-0 z-40 pl-0 transition-[transform] duration-500 ease-out will-change-transform"
-        style={{
-          transform: visible ? "translateX(0)" : "translateX(-100%)",
-        }}
-        aria-hidden
+  return (
+    <div
+      className={`fixed z-40 transition-[transform] duration-500 ease-out will-change-transform ${
+        fromRight ? "right-0" : "left-0"
+      }`}
+      style={{
+        top: `${topPercent}%`,
+        transform: `translateX(${x}) translateY(-50%)`,
+        transformOrigin: fromRight ? "right center" : "left center",
+      }}
+      aria-hidden
+    >
+      <span
+        className="leading-none select-none block"
+        style={{ fontSize: "7.5rem" }}
       >
-        <div className="flex flex-col gap-0.5 rounded-r-xl bg-background/95 px-2.5 py-2.5 shadow-lg border border-r-0 border-border">
-          {leftEmojis.map((e, i) => (
-            <span key={`l-${i}`} className="text-2xl leading-none">
-              {e}
-            </span>
-          ))}
-        </div>
-      </div>
-    </>
+        {emoji}
+      </span>
+    </div>
   );
 }
