@@ -13,6 +13,7 @@ model User {
   lastName        String?
   username        String?
   photoUrl        String?
+  photoFileId    String?   // Telegram file_id for bot users (avatar proxied via /api/avatar)
   phoneNumber     String?
   items           OrderItem[]
   initiatedOrders OrderSession[] @relation("AdminRelation")

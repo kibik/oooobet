@@ -15,6 +15,7 @@ interface User {
   lastName: string | null;
   username: string | null;
   photoUrl: string | null;
+  avatarUrl?: string | null;
   phoneNumber: string | null;
 }
 

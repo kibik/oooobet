@@ -18,6 +18,7 @@ export async function GET() {
       return NextResponse.json({ user: null });
     }
 
+    const avatarUrl = user.photoUrl || (user.photoFileId ? `/api/avatar/${user.id}` : null);
     return NextResponse.json({
       user: {
         id: user.id.toString(),
@@ -25,6 +26,7 @@ export async function GET() {
         lastName: user.lastName,
         username: user.username,
         photoUrl: user.photoUrl,
+        avatarUrl,
         phoneNumber: user.phoneNumber,
       },
     });

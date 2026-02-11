@@ -20,6 +20,17 @@ bot.command("start", async (ctx) => {
   if (payload.startsWith("auth_") && tgUser && !isGroup) {
     const token = payload.slice(5); // remove "auth_" prefix
     try {
+      // Fetch user's profile photo for avatar
+      let photoFileId: string | null = null;
+      try {
+        const profilePhotos = await bot.api.getUserProfilePhotos(tgUser.id);
+        const sizes = profilePhotos.photos?.[0];
+        const largest = sizes?.[sizes.length - 1];
+        if (largest?.file_id) photoFileId = largest.file_id;
+      } catch (_) {
+        /* ignore */
+      }
+
       // Upsert user
       await prisma.user.upsert({
         where: { id: BigInt(tgUser.id) },
@@ -27,12 +38,14 @@ bot.command("start", async (ctx) => {
           firstName: tgUser.first_name,
           lastName: tgUser.last_name || null,
           username: tgUser.username || null,
+          ...(photoFileId && { photoFileId }),
         },
         create: {
           id: BigInt(tgUser.id),
           firstName: tgUser.first_name,
           lastName: tgUser.last_name || null,
           username: tgUser.username || null,
+          ...(photoFileId && { photoFileId }),
         },
       });
 

@@ -46,7 +46,8 @@ interface OrderItem {
     firstName: string;
     lastName: string | null;
     username: string | null;
-    photoUrl: string | null;
+    photoUrl?: string | null;
+    avatarUrl?: string | null;
   };
 }
 
@@ -62,7 +63,8 @@ interface OrderSession {
     firstName: string;
     lastName: string | null;
     username: string | null;
-    photoUrl: string | null;
+    photoUrl?: string | null;
+    avatarUrl?: string | null;
     phoneNumber: string | null;
   };
   items: OrderItem[];
@@ -367,9 +369,9 @@ export default function OrderPage({
             </h1>
             {user && (
               <div className="flex items-center gap-2">
-                {user.photoUrl ? (
+                {(user.avatarUrl ?? user.photoUrl) ? (
                   <img
-                    src={user.photoUrl}
+                    src={user.avatarUrl ?? user.photoUrl ?? ""}
                     alt={user.firstName}
                     className="w-7 h-7 rounded-full object-cover"
                   />
@@ -394,9 +396,9 @@ export default function OrderPage({
               <div className="space-y-1">
                 <CardTitle className="text-base flex items-center gap-2">
                   <span>За{"\u00A0"}всё платит</span>
-                  {session.admin.photoUrl ? (
+                  {(session.admin.avatarUrl ?? session.admin.photoUrl) ? (
                     <img
-                      src={session.admin.photoUrl}
+                      src={session.admin.avatarUrl ?? session.admin.photoUrl ?? ""}
                       alt={session.admin.firstName}
                       className="w-5 h-5 rounded-full object-cover inline-block"
                     />
@@ -746,9 +748,9 @@ export default function OrderPage({
                       <div key={userId} className="space-y-2">
                         <div className="flex items-center justify-between">
                           <h3 className="font-medium text-sm flex items-center gap-1.5">
-                            {itemUser.photoUrl ? (
+                            {(itemUser.avatarUrl ?? itemUser.photoUrl) ? (
                               <img
-                                src={itemUser.photoUrl}
+                                src={itemUser.avatarUrl ?? itemUser.photoUrl ?? ""}
                                 alt={itemUser.firstName}
                                 className="w-5 h-5 rounded-full object-cover"
                               />
@@ -903,9 +905,9 @@ export default function OrderPage({
                             className="flex items-center justify-between py-2 px-3 rounded-md bg-muted/50"
                           >
                             <span className="text-sm flex items-center gap-1.5">
-                              {itemUser.photoUrl ? (
+                              {(itemUser.avatarUrl ?? itemUser.photoUrl) ? (
                                 <img
-                                  src={itemUser.photoUrl}
+                                  src={itemUser.avatarUrl ?? itemUser.photoUrl ?? ""}
                                   alt={itemUser.firstName}
                                   className="w-5 h-5 rounded-full object-cover"
                                 />

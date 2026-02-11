@@ -2,10 +2,29 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 
-// Serialize BigInt values for JSON
-function serializeSession(session: Record<string, unknown>) {
+function getAvatarUrl(user: { id: bigint; photoUrl: string | null; photoFileId: string | null }): string | null {
+  if (user.photoUrl) return user.photoUrl;
+  if (user.photoFileId) return `/api/avatar/${user.id}`;
+  return null;
+}
+
+function serializeSession(session: {
+  admin?: { id: bigint; photoUrl: string | null; photoFileId: string | null };
+  items?: Array<{ user?: { id: bigint; photoUrl: string | null; photoFileId: string | null } }>;
+} & Record<string, unknown>) {
+  const withAvatars = {
+    ...session,
+    admin: session.admin
+      ? { ...session.admin, avatarUrl: getAvatarUrl(session.admin) }
+      : undefined,
+    items: session.items?.map((item) =>
+      item.user
+        ? { ...item, user: { ...item.user, avatarUrl: getAvatarUrl(item.user) } }
+        : item
+    ),
+  };
   return JSON.parse(
-    JSON.stringify(session, (_, value) =>
+    JSON.stringify(withAvatars, (_, value) =>
       typeof value === "bigint" ? value.toString() : value
     )
   );
@@ -30,6 +49,7 @@ export async function GET(
             lastName: true,
             username: true,
             photoUrl: true,
+            photoFileId: true,
             phoneNumber: true,
           },
         },
@@ -42,6 +62,7 @@ export async function GET(
                 lastName: true,
                 username: true,
                 photoUrl: true,
+                photoFileId: true,
               },
             },
           },
