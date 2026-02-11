@@ -9,7 +9,7 @@ interface TelegramLoginProps {
 }
 
 export default function TelegramLogin({ botName, onAuth }: TelegramLoginProps) {
-  const [token, setToken] = useState<string | null>(null);
+  const [, setToken] = useState<string | null>(null); // setToken used for bot link flow
   const [status, setStatus] = useState<"idle" | "waiting" | "confirmed" | "expired">("idle");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 

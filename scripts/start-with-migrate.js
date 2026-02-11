@@ -17,7 +17,7 @@ if (url && /\.(proxy\.rlwy\.net|railway\.internal)/.test(url)) {
     if (!u.searchParams.has("connect_timeout")) u.searchParams.set("connect_timeout", "30");
     process.env.DATABASE_URL = u.toString();
     console.log("[start] DATABASE_URL: sslmode=require, connect_timeout=30");
-  } catch (_) {
+  } catch {
     const extra = (url.includes("?") ? "&" : "?") + "sslmode=require&connect_timeout=30";
     process.env.DATABASE_URL = url + extra;
     console.log("[start] DATABASE_URL: appended sslmode + connect_timeout");
@@ -32,14 +32,12 @@ sleep(initialWait * 1000);
 const maxAttempts = 5;
 const delayMs = 10000;
 
-let migrateOk = false;
 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
   try {
     console.log("[start] prisma migrate deploy (attempt " + attempt + "/" + maxAttempts + ")");
     execSync("npx prisma migrate deploy", { stdio: "inherit", env: process.env });
-    migrateOk = true;
     break;
-  } catch (e) {
+  } catch {
     if (attempt === maxAttempts) {
       console.error("[start] migrate failed after " + maxAttempts + " attempts");
       if (process.env.RAILWAY_SKIP_MIGRATE_ON_FAIL === "1") {

@@ -136,14 +136,6 @@ export default function OrderPage({
     return () => cancelAnimationFrame(t);
   }, [flyingItem]);
 
-  const handleFlyEnd = () => {
-    if (flyingItem) {
-      handleAddFromMenu(flyingItem.menuItem);
-      setFlyingItem(null);
-      setFlyPhase("from");
-    }
-  };
-
   // --- Data fetching ---
 
   const fetchOrder = useCallback(async () => {

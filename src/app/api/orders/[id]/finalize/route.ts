@@ -100,7 +100,6 @@ export async function POST(
     // Send notifications via bot
     const bot = getBot();
     const adminPhone = orderSession.admin.phoneNumber || "";
-    const adminName = orderSession.admin.firstName;
     const results: Array<{
       userId: string;
       firstName: string;

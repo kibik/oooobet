@@ -79,7 +79,7 @@ bot.command("start", async (ctx) => {
         const sizes = profilePhotos.photos?.[0];
         const largest = sizes?.[sizes.length - 1];
         if (largest?.file_id) photoFileId = largest.file_id;
-      } catch (_) {
+      } catch {
         /* ignore */
       }
 
