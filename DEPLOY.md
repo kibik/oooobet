@@ -1,8 +1,25 @@
 # Деплой на Railway
 
+## 0. Если Railway пишет «Connected branch does not exist»
+
+В GitHub ещё нет ветки `main`. Сделай так:
+
+1. **Создай репозиторий на GitHub:** [github.com/new](https://github.com/new), имя например `ooobed`, **не** ставь галочку «Add a README» — репо должен быть пустым.
+2. **Подключи remote и запушь** (подставь свой логин и имя репо):
+
+```bash
+cd /Users/antonspiridonov/Documents/cursor/ooobed
+git remote add origin https://github.com/ТВОЙ_ЛОГИН/ooobed.git
+git push -u origin main
+```
+
+3. В Railway обнови страницу или нажми **Redeploy** — ветка `main` появится.
+
+---
+
 ## 1. Репозиторий
 
-Закоммить проект и создай репозиторий на GitHub, затем подключи его к Railway.
+Закоммить проект и создать репозиторий на GitHub, затем подключить его к Railway (см. блок выше).
 
 ## 2. Новый проект в Railway
 
