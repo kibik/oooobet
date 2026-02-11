@@ -101,18 +101,17 @@ https://ТВОЙ_РАЙЛВЕЙ_URL/api/bot/setup?secret=ТВОЙ_TELEGRAM_BOT_T
 
 ---
 
-## 9. Ошибка «Can't reach database server at postgres.railway.internal» на деплое
+## 9. Ошибка «Can't reach database server» (P1001) на деплое
 
-Если при старте приложения на Railway в логах видно `P1001` и хост `postgres.railway.internal`, приложение не может достучаться до БД по внутреннему адресу (иногда так бывает в зависимости от региона/настроек).
+Если при старте видно `P1001` и хост `postgres.railway.internal` или `*.proxy.rlwy.net`, приложение не достучалось до БД.
 
-**Что сделать:** задать приложению **публичный** URL PostgreSQL вместо внутреннего.
+**Чеклист в Railway:**
 
-1. В Railway открой сервис **PostgreSQL** (не приложение).
-2. Вкладка **Variables** или **Connect** — найди переменную с подключением. Часто есть две: с хостом `postgres.railway.internal` (private) и с хостом вида `roundhouse.proxy.rlwy.net` или `*.proxy.rlwy.net` (public). Скопируй **полную строку** с публичным хостом (Connection URL / Public URL).
-3. Открой сервис **приложения** → **Variables**.
-4. Добавь или измени переменную **`DATABASE_URL`**: вставь скопированный публичный URL (не Reference, а именно значение). Так приложение будет подключаться к БД через публичный прокси Railway.
-5. Сохрани и сделай **Redeploy** сервиса приложения.
+1. **PostgreSQL и приложение в одном проекте** — иначе внутренняя сеть недоступна.
+2. **PostgreSQL не приостановлен** — в карточке БД статус должен быть Running.
+3. **TCP Proxy для публичного доступа** — сервис PostgreSQL → Settings → Networking → **Generate TCP Proxy** (если используешь public URL). Без прокси public-хост может не отвечать.
+4. **Переменная `RAILWAY_BETA_ENABLE_BUILD_V2=1`** — в сервисе приложения добавь эту переменную. Иногда улучшает работу внутренней сети.
+5. **Попробуй internal URL** — в приложении используй Reference на `DATABASE_URL` из PostgreSQL (внутренний хост). Для app-to-DB внутри проекта internal обычно надёжнее public.
+6. **Стартовая задержка** — скрипт `scripts/start-with-migrate.js` ждёт 20 с перед первой попыткой миграции (контейнеры стартуют параллельно). Затем 5 попыток с паузой 10 с.
 
-**Важно:** для публичного URL Railway PostgreSQL часто нужен SSL. В проекте скрипт `scripts/start-with-migrate.js` при старте автоматически добавляет `sslmode=require` к `DATABASE_URL`, если хост — `*.proxy.rlwy.net` или `*.railway.internal`. Если всё равно P1001, вручную добавь в конец URL в переменной `DATABASE_URL`: `?sslmode=require` (или `&sslmode=require`, если в URL уже есть `?`).
-
-После этого `prisma migrate deploy` и приложение должны успешно подключаться к БД.
+**Если всё равно не работает:** добавь в приложении переменную `RAILWAY_SKIP_MIGRATE_ON_FAIL=1` — при неудачной миграции приложение всё равно запустится (запросы к БД будут падать, но можно отладить).
