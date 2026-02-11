@@ -39,7 +39,7 @@ git push -u origin main
 | `NEXT_PUBLIC_BOT_USERNAME` | Юзернейм бота без `@` (например `ooobet_bot`) |
 | `SESSION_SECRET` | Случайная строка ≥ 32 символов. Сгенерировать: `openssl rand -base64 32` |
 
-`DATABASE_URL` подтягивается из PostgreSQL-сервиса (Reference).
+`DATABASE_URL` можно взять из PostgreSQL-сервиса (Reference). **Если при деплое ошибка «Can't reach database server at postgres.railway.internal»** — см. раздел 9 ниже: используй публичный URL БД.
 
 ## 4. Домен и BASE_URL
 
@@ -98,3 +98,21 @@ https://ТВОЙ_РАЙЛВЕЙ_URL/api/bot/setup?secret=ТВОЙ_TELEGRAM_BOT_T
 2. **Railway → Deployments:** последний деплой успешен; при старте выполняется `prisma migrate deploy` — таблицы `User` и `AuthToken` должны быть созданы.
 3. **Логи (View Logs):** при нажатии «Войти через Telegram» ищи строку `Create auth token error:`; при ответе бота «Что-то пошло не так» — `Auth token confirmation error:`. По тексту ошибки (и коду Prisma, если есть) можно понять: нет таблицы, нет подключения к БД и т.д.
 4. После изменений в `prisma/schema.prisma` или миграциях сделай коммит и пуш — Railway пересоберёт приложение и при старте применит миграции.
+
+---
+
+## 9. Ошибка «Can't reach database server at postgres.railway.internal» на деплое
+
+Если при старте приложения на Railway в логах видно `P1001` и хост `postgres.railway.internal`, приложение не может достучаться до БД по внутреннему адресу (иногда так бывает в зависимости от региона/настроек).
+
+**Что сделать:** задать приложению **публичный** URL PostgreSQL вместо внутреннего.
+
+1. В Railway открой сервис **PostgreSQL** (не приложение).
+2. Вкладка **Variables** или **Connect** — найди переменную с подключением. Часто есть две: с хостом `postgres.railway.internal` (private) и с хостом вида `roundhouse.proxy.rlwy.net` или `*.proxy.rlwy.net` (public). Скопируй **полную строку** с публичным хостом (Connection URL / Public URL).
+3. Открой сервис **приложения** → **Variables**.
+4. Добавь или измени переменную **`DATABASE_URL`**: вставь скопированный публичный URL (не Reference, а именно значение). Так приложение будет подключаться к БД через публичный прокси Railway.
+5. Сохрани и сделай **Redeploy** сервиса приложения.
+
+**Важно:** для публичного URL Railway PostgreSQL часто нужен SSL. В проекте скрипт `scripts/start-with-migrate.js` при старте автоматически добавляет `sslmode=require` к `DATABASE_URL`, если хост — `*.proxy.rlwy.net` или `*.railway.internal`. Если всё равно P1001, вручную добавь в конец URL в переменной `DATABASE_URL`: `?sslmode=require` (или `&sslmode=require`, если в URL уже есть `?`).
+
+После этого `prisma migrate deploy` и приложение должны успешно подключаться к БД.
