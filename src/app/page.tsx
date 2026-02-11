@@ -13,22 +13,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import Link from "next/link";
 import { useMemo } from "react";
-
-const DAILY_QUOTES = [
-  "Хорош обед, когда в\u00A0нём и\u00A0десерт, и\u00A0винегрет, и\u00A0лишних дырок в\u00A0ремне нет",
-  "Щи да\u00A0каша\u00A0— радость наша, а\u00A0если с\u00A0мясом\u00A0— так и\u00A0жизнь краше",
-  "Брюхо\u00A0— не\u00A0зеркало: что в\u00A0него попало, то\u00A0и\u00A0пропало",
-  "Не\u00A0беда, что в\u00A0супе лебеда, была\u00A0бы в\u00A0нём хоть капля сала",
-  "Лучше пузо от\u00A0еды, чем горб от\u00A0работы",
-];
-
-function getDailyQuote(): string {
-  const dayOfYear = Math.floor(
-    (Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) /
-      86400000
-  );
-  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
-}
+import { getDailyQuote } from "@/lib/quotes";
 
 const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME || "oooobet_bot";
 

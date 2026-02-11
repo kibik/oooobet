@@ -6,6 +6,58 @@ import { parseSlug, fetchMenu } from "@/lib/yandex-eda";
 
 const bot = getBot();
 
+const OBED_PHRASES = [
+  "🅾️🅱️🅴🅳",
+  "🅞🅑🅔🅓",
+  "ØβΞÐ",
+  "🇴Ⴆᗴᗪ",
+  "૦БΣÐ",
+  "🅾︎฿€Đ",
+  "𝕆𝔹𝔼𝔻",
+  "𝙾𝙱𝙴𝙳",
+  "𝐎𝐁𝐄𝐃",
+  "🅾️βΣ∂",
+  "ΘβΣÐ",
+  "Погнали в зону визуального безумия 👹",
+  "ØБΞÐ̷",
+  "🅾️БΞÐ̴̾",
+  "ΘβΞÐ̸",
+  "◎БΣÐ̵",
+  "0БΞÐ̷̿",
+  "Ø฿ΞÐ̴̐",
+  "🅾︎βΞÐ̶",
+  "⊙БΞÐ̸̽",
+  "ØβΣÐ̷͠",
+  "⚬БΞÐ̴",
+  "0βΞÐ̶̑",
+  "🄾БΞÐ̷̇",
+  "ØБΞÐ̴̿",
+  "ΘБΣÐ̸̐",
+  "◎βΞÐ̶͝",
+  "Ø฿ΣÐ̴̽",
+  "0БΞÐ̷̾",
+  "🅾️βΞÐ̸̒",
+  "⊗БΞÐ̴",
+  "ØβΞÐ̶̿",
+  "O̷͑̎͝Б̸͐̈́Ξ̷̈́͗Ð̶̾",
+  "Ø̵Б̴Ξ̷Ð̴̓",
+  "O̶̿Б̴̾Ξ̶͗Ð̷",
+  "Θ̷Б̸͝Ξ̴̐Ð̷",
+  "Ø̶̓Б̴Ξ̷̄Ð̸",
+];
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function pluralizeDishes(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return "блюдо";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "блюда";
+  return "блюд";
+}
+
 // Store pending restaurant URLs while waiting for phone number
 const pendingUrls = new Map<number, string>();
 
@@ -278,12 +330,13 @@ async function createOrder(
     ? `Заказываем из <a href="${restaurantUrl}">${displaySlug}</a>`
     : `Заказываем из <a href="${restaurantUrl}">ресторана</a>`;
 
-  const menuNote = menuCount > 0
-    ? `\n\nИз меню загружено ${menuCount} позиций`
-    : "\n\nМеню не удалось загрузить — позиции можно добавить вручную";
+  const phrase = pickRandom(OBED_PHRASES);
+  const mainLine = menuCount > 0
+    ? `${restaurantLine}, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор`
+    : `${restaurantLine}\n\nМеню не удалось загрузить — позиции можно добавить вручную`;
 
   await ctx.reply(
-    `Время потчевать!\n\n${restaurantLine}${menuNote}`,
+    `[${phrase}]\n\n${mainLine}`,
     {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, use } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo, use } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import TelegramLogin from "@/components/TelegramLogin";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
+import { getDailyQuote } from "@/lib/quotes";
 
 // Format number with thin space thousands separator and before ₽
 function fmtPrice(n: number): string {
@@ -117,6 +118,32 @@ export default function OrderPage({
   const [finalizing, setFinalizing] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // Fly-to-cart animation
+  const [flyingItem, setFlyingItem] = useState<{
+    menuItem: MenuItem;
+    imageUrl: string | null;
+    fromRect: DOMRect;
+    toRect: DOMRect;
+  } | null>(null);
+  const [flyPhase, setFlyPhase] = useState<"from" | "to">("from");
+  const orderCardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!flyingItem) return;
+    const t = requestAnimationFrame(() => {
+      requestAnimationFrame(() => setFlyPhase("to"));
+    });
+    return () => cancelAnimationFrame(t);
+  }, [flyingItem]);
+
+  const handleFlyEnd = () => {
+    if (flyingItem) {
+      handleAddFromMenu(flyingItem.menuItem);
+      setFlyingItem(null);
+      setFlyPhase("from");
+    }
+  };
+
   // --- Data fetching ---
 
   const fetchOrder = useCallback(async () => {
@@ -159,6 +186,25 @@ export default function OrderPage({
 
   // --- Handlers ---
 
+  const handleWantThis = (menuItem: MenuItem, e: React.MouseEvent) => {
+    const row = (e.target as HTMLElement).closest("[data-menu-row]");
+    const img = row?.querySelector("img");
+    const fromEl = img || row;
+    const toEl = orderCardRef.current;
+    if (!fromEl || !toEl) {
+      handleAddFromMenu(menuItem);
+      return;
+    }
+    const fromRect = fromEl.getBoundingClientRect();
+    const toRect = toEl.getBoundingClientRect();
+    setFlyingItem({
+      menuItem,
+      imageUrl: menuItem.imageUrl,
+      fromRect,
+      toRect,
+    });
+  };
+
   const handleAddFromMenu = async (menuItem: MenuItem) => {
     if (!user) return;
     try {
@@ -179,6 +225,14 @@ export default function OrderPage({
       }
     } catch {
       toast.error("Ошибка сети");
+    }
+  };
+
+  const handleFlyEnd = () => {
+    if (flyingItem) {
+      handleAddFromMenu(flyingItem.menuItem);
+      setFlyingItem(null);
+      setFlyPhase("from");
     }
   };
 
@@ -280,6 +334,8 @@ export default function OrderPage({
     >
   );
 
+  const quote = useMemo(() => getDailyQuote(), []);
+
   const totalSum =
     session?.items.reduce((sum, item) => sum + item.price, 0) || 0;
   const isAdmin = user && session && user.id === session.adminId;
@@ -303,14 +359,17 @@ export default function OrderPage({
   const hasMenu = menu && menu.total > 0;
   const categories = menu ? Object.keys(menu.categories) : [];
 
-  // Filter menu items by search
+  // Filter menu items by search (all categories when search is active)
   const filteredMenuItems = (() => {
-    if (!menu || !activeCategory || !menu.categories[activeCategory])
-      return [];
-    const items = menu.categories[activeCategory];
-    if (!menuSearch.trim()) return items;
+    if (!menu) return [];
+    if (!menuSearch.trim()) {
+      const cat = activeCategory && menu.categories[activeCategory]
+        ? activeCategory
+        : categories[0];
+      return menu.categories[cat] || [];
+    }
     const q = menuSearch.toLowerCase();
-    return items.filter(
+    return Object.values(menu.categories).flat().filter(
       (item) =>
         item.name.toLowerCase().includes(q) ||
         item.description?.toLowerCase().includes(q)
@@ -363,10 +422,15 @@ export default function OrderPage({
       <div className="max-w-2xl mx-auto px-4 py-8 space-y-6">
         {/* Header */}
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold tracking-tight logo-gradient">
-              oooobet!
-            </h1>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight logo-gradient">
+                oooobet!
+              </h1>
+              <p className="text-muted-foreground text-sm mt-1">
+                {quote}
+              </p>
+            </div>
             {user && (
               <div className="flex items-center gap-2">
                 {(user.avatarUrl ?? user.photoUrl) ? (
@@ -485,10 +549,7 @@ export default function OrderPage({
                   </Card>
                 ) : hasMenu ? (
                   <Card>
-                    <CardHeader>
-                      <CardTitle className="text-lg">Меню ресторана</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
+                    <CardContent className="space-y-4 pt-6">
                       {/* Search */}
                       <Input
                         placeholder="Поиск по меню..."
@@ -502,11 +563,12 @@ export default function OrderPage({
                         {categories.map((cat) => (
                           <button
                             key={cat}
+                            type="button"
                             onClick={() => {
                               setActiveCategory(cat);
                               setMenuSearch("");
                             }}
-                            className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                            className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors cursor-pointer ${
                               activeCategory === cat
                                 ? "bg-primary text-primary-foreground"
                                 : "bg-muted text-muted-foreground hover:bg-muted/80"
@@ -528,6 +590,7 @@ export default function OrderPage({
                             return (
                               <div
                                 key={menuItem.id}
+                                data-menu-row
                                 className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 hover:shadow-sm transition-all duration-150"
                               >
                                 {/* Image */}
@@ -595,8 +658,8 @@ export default function OrderPage({
                                       variant="default"
                                       size="sm"
                                       className="text-xs h-8 px-3"
-                                      onClick={() =>
-                                        handleAddFromMenu(menuItem)
+                                      onClick={(e) =>
+                                        handleWantThis(menuItem, e)
                                       }
                                     >
                                       Хочу это! 🤤
@@ -617,8 +680,9 @@ export default function OrderPage({
                       <Separator />
                       <div>
                         <button
+                          type="button"
                           onClick={() => setShowManualForm(!showManualForm)}
-                          className="text-sm text-muted-foreground hover:text-foreground transition-colors w-full text-center py-1"
+                          className="text-sm text-muted-foreground hover:text-foreground transition-colors w-full text-center py-1 cursor-pointer"
                         >
                           {showManualForm
                             ? "Скрыть ручной ввод"
@@ -721,6 +785,7 @@ export default function OrderPage({
             )}
 
             {/* ===== ORDERED ITEMS LIST ===== */}
+            <div ref={orderCardRef}>
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -773,20 +838,21 @@ export default function OrderPage({
                             >
                               <span>{item.dishName}</span>
                               <div className="flex items-center gap-2 shrink-0">
-                                <span className="font-medium tabular-nums text-right min-w-[5rem]">
-                                  {fmtPrice(item.price)}
-                                </span>
                                 {session.status === "OPEN" &&
                                   user.id === userId && (
                                     <button
+                                      type="button"
                                       onClick={() =>
                                         handleDeleteItem(item.id)
                                       }
-                                      className="text-destructive hover:text-destructive/80 text-xs font-medium"
+                                      className="text-destructive hover:text-destructive/80 text-xs font-medium cursor-pointer"
                                     >
                                       Удалить
                                     </button>
                                   )}
+                                <span className="font-medium tabular-nums text-right min-w-[5rem]">
+                                  {fmtPrice(item.price)}
+                                </span>
                               </div>
                             </div>
                           ))}
@@ -802,6 +868,7 @@ export default function OrderPage({
                 )}
               </CardContent>
             </Card>
+            </div>
 
             {/* ===== Admin: Finalize ===== */}
             {isAdmin &&
@@ -929,6 +996,33 @@ export default function OrderPage({
               </Card>
             )}
           </>
+        )}
+
+        {/* Fly-to-cart overlay */}
+        {flyingItem && (
+          <div
+            className="fixed z-[9999] pointer-events-none"
+            style={{
+              left: flyPhase === "from" ? flyingItem.fromRect.left : flyingItem.toRect.left + (flyingItem.toRect.width - Math.min(flyingItem.fromRect.width, 48)) / 2,
+              top: flyPhase === "from" ? flyingItem.fromRect.top : flyingItem.toRect.top + (flyingItem.toRect.height - Math.min(flyingItem.fromRect.height, 48)) / 2,
+              width: flyPhase === "from" ? flyingItem.fromRect.width : Math.min(flyingItem.fromRect.width, 48),
+              height: flyPhase === "from" ? flyingItem.fromRect.height : Math.min(flyingItem.fromRect.height, 48),
+              transition: "all 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94)",
+            }}
+            onTransitionEnd={handleFlyEnd}
+          >
+            {flyingItem.imageUrl ? (
+              <img
+                src={flyingItem.imageUrl}
+                alt=""
+                className="w-full h-full rounded-md object-cover shadow-lg"
+              />
+            ) : (
+              <div className="w-full h-full rounded-md bg-muted flex items-center justify-center text-lg shadow-lg">
+                🍽
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
