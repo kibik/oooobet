@@ -46,6 +46,7 @@ interface OrderItem {
     firstName: string;
     lastName: string | null;
     username: string | null;
+    photoUrl: string | null;
   };
 }
 
@@ -61,6 +62,7 @@ interface OrderSession {
     firstName: string;
     lastName: string | null;
     username: string | null;
+    photoUrl: string | null;
     phoneNumber: string | null;
   };
   items: OrderItem[];
