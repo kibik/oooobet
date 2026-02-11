@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              BigInt         @id // Telegram User ID
+  firstName       String
+  lastName        String?
+  username        String?
+  photoUrl        String?
+  phoneNumber     String?
+  items           OrderItem[]
+  initiatedOrders OrderSession[] @relation("AdminRelation")
+  authTokens      AuthToken[]
+}
+
+model OrderSession {
+  id          String      @id @default(cuid())
+  url         String
+  status      String      @default("OPEN")
+  deliveryFee Int         @default(0)
+  serviceFee  Int         @default(0)
+  adminId     BigInt
+  admin       User        @relation("AdminRelation", fields: [adminId], references: [id])
+  items       OrderItem[]
+  menuItems   MenuItem[]
+  createdAt   DateTime    @default(now())
+}
+
+model MenuItem {
+  id          String       @id @default(cuid())
+  sessionId   String
+  session     OrderSession @relation(fields: [sessionId], references: [id])
+  category    String
+  name        String
+  price       Int
+  description String?
+  weight      String?
+  imageUrl    String?
+}
+
+model OrderItem {
+  id        String       @id @default(cuid())
+  sessionId String
+  session   OrderSession @relation(fields: [sessionId], references: [id])
+  userId    BigInt
+  user      User         @relation(fields: [userId], references: [id])
+  dishName  String
+  price     Int
+}
+
+model AuthToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    BigInt?
+  user      User?    @relation(fields: [userId], references: [id])
+  confirmed Boolean  @default(false)
+  createdAt DateTime @default(now())
+}

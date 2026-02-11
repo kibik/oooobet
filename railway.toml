@@ -1,0 +1,10 @@
+# Railway deployment config
+# Build and start are taken from package.json (npm run build / npm run start)
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "npm run start"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
