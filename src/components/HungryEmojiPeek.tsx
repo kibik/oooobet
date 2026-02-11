@@ -14,10 +14,16 @@ export default function HungryEmojiPeek() {
 
   useEffect(() => {
     const show = () => {
+      const newSide = Math.random() >= 0.5 ? "left" : "right";
       setEmoji(EMOJIS[Math.floor(Math.random() * EMOJIS.length)]!);
-      setSide(Math.random() >= 0.5 ? "left" : "right");
+      setSide(newSide);
       setTopPercent(15 + Math.random() * 70);
-      setVisible(true);
+      setVisible(false);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setVisible(true);
+        });
+      });
       const t = window.setTimeout(() => setVisible(false), VISIBLE_MS);
       return () => window.clearTimeout(t);
     };
