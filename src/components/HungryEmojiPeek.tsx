@@ -31,7 +31,8 @@ export default function HungryEmojiPeek() {
   }, []);
 
   const fromRight = side === "right";
-  const x = visible ? "0" : fromRight ? "110%" : "-110%";
+  // Сдвиг на 100vw — эмодзи точно за границей экрана. Справа: скрыт в +100vw, показ = движение влево; слева: скрыт в -100vw, показ = движение вправо.
+  const xOff = visible ? "0" : fromRight ? "100vw" : "-100vw";
 
   return (
     <div
@@ -40,8 +41,7 @@ export default function HungryEmojiPeek() {
       }`}
       style={{
         top: `${topPercent}%`,
-        transform: `translateX(${x}) translateY(-50%)`,
-        transformOrigin: fromRight ? "right center" : "left center",
+        transform: `translateX(${xOff}) translateY(-50%)`,
       }}
       aria-hidden
     >
