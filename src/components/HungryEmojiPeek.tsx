@@ -14,16 +14,10 @@ export default function HungryEmojiPeek() {
 
   useEffect(() => {
     const show = () => {
-      const newSide = Math.random() >= 0.5 ? "left" : "right";
       setEmoji(EMOJIS[Math.floor(Math.random() * EMOJIS.length)]!);
-      setSide(newSide);
+      setSide(Math.random() >= 0.5 ? "left" : "right");
       setTopPercent(15 + Math.random() * 70);
-      setVisible(false);
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          setVisible(true);
-        });
-      });
+      setVisible(true);
       const t = window.setTimeout(() => setVisible(false), VISIBLE_MS);
       return () => window.clearTimeout(t);
     };
@@ -36,27 +30,40 @@ export default function HungryEmojiPeek() {
     };
   }, []);
 
-  const fromRight = side === "right";
-  // Сдвиг на 100vw — эмодзи точно за границей экрана. Справа: скрыт в +100vw, показ = движение влево; слева: скрыт в -100vw, показ = движение вправо.
-  const xOff = visible ? "0" : fromRight ? "100vw" : "-100vw";
+  const topStyle = { top: `${topPercent}%` };
+  const emojiEl = (
+    <span
+      className="leading-none select-none block"
+      style={{ fontSize: "7.5rem" }}
+    >
+      {emoji}
+    </span>
+  );
 
   return (
-    <div
-      className={`fixed z-40 transition-[transform] duration-500 ease-out will-change-transform ${
-        fromRight ? "right-0" : "left-0"
-      }`}
-      style={{
-        top: `${topPercent}%`,
-        transform: `translateX(${xOff}) translateY(-50%)`,
-      }}
-      aria-hidden
-    >
-      <span
-        className="leading-none select-none block"
-        style={{ fontSize: "7.5rem" }}
+    <>
+      {/* Левый: всегда left:0, скрыт = -100vw, показан = 0 */}
+      <div
+        className="fixed left-0 z-40 transition-[transform] duration-500 ease-out will-change-transform"
+        style={{
+          ...topStyle,
+          transform: `translateX(${side === "left" && visible ? "0" : "-100vw"}) translateY(-50%)`,
+        }}
+        aria-hidden
       >
-        {emoji}
-      </span>
-    </div>
+        {emojiEl}
+      </div>
+      {/* Правый: всегда right:0, скрыт = 100vw, показан = 0 */}
+      <div
+        className="fixed right-0 z-40 transition-[transform] duration-500 ease-out will-change-transform"
+        style={{
+          ...topStyle,
+          transform: `translateX(${side === "right" && visible ? "0" : "100vw"}) translateY(-50%)`,
+        }}
+        aria-hidden
+      >
+        {emojiEl}
+      </div>
+    </>
   );
 }
