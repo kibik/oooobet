@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 
 interface TelegramLoginProps {
   botName: string;
@@ -9,7 +10,7 @@ interface TelegramLoginProps {
 }
 
 export default function TelegramLogin({ botName, onAuth }: TelegramLoginProps) {
-  const [, setToken] = useState<string | null>(null); // setToken used for bot link flow
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "waiting" | "confirmed" | "expired">("idle");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -23,18 +24,29 @@ export default function TelegramLogin({ botName, onAuth }: TelegramLoginProps) {
   // Generate token and start polling
   const startAuth = useCallback(async () => {
     cleanup();
+    setAuthToken(null);
     setStatus("idle");
 
     try {
       const res = await fetch("/api/auth/token", { method: "POST" });
-      if (!res.ok) return;
       const data = await res.json();
-      setToken(data.token);
+      if (!res.ok) {
+        toast.error(data.error || "Не удалось войти. Попробуйте ещё раз.");
+        return;
+      }
+      if (!data.token) {
+        toast.error("Ошибка сервера. Попробуйте ещё раз.");
+        return;
+      }
+      setAuthToken(data.token);
       setStatus("waiting");
 
       // Open Telegram bot link
       const botLink = `https://t.me/${botName}?start=auth_${data.token}`;
-      window.open(botLink, "_blank");
+      const opened = window.open(botLink, "_blank");
+      if (!opened) {
+        toast.error("Браузер заблокировал окно. Разрешите всплывающие окна или скопируйте ссылку из Telegram.");
+      }
 
       // Start polling every 2 seconds
       pollRef.current = setInterval(async () => {
@@ -56,6 +68,7 @@ export default function TelegramLogin({ botName, onAuth }: TelegramLoginProps) {
         }
       }, 2000);
     } catch {
+      toast.error("Ошибка сети. Проверьте подключение и попробуйте ещё раз.");
       setStatus("idle");
     }
   }, [botName, onAuth, cleanup]);
@@ -74,9 +87,21 @@ export default function TelegramLogin({ botName, onAuth }: TelegramLoginProps) {
           </Button>
 
           {status === "waiting" && (
-            <p className="text-xs text-muted-foreground text-center animate-pulse">
-              Нажми «Start» в{"\u00A0"}Telegram и{"\u00A0"}вернись сюда...
-            </p>
+            <div className="text-center space-y-2">
+              <p className="text-xs text-muted-foreground animate-pulse">
+                Нажми «Start» в{"\u00A0"}Telegram и{"\u00A0"}вернись сюда...
+              </p>
+              <p className="text-xs">
+                <a
+                  href={authToken ? `https://t.me/${botName}?start=auth_${authToken}` : `https://t.me/${botName}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline"
+                >
+                  Открыть бота в Telegram →
+                </a>
+              </p>
+            </div>
           )}
 
           {status === "expired" && (
