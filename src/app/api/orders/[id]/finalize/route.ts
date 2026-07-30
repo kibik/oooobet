@@ -62,6 +62,10 @@ export async function POST(
     const body = await req.json();
     const deliveryFee = Math.round(Number(body.deliveryFee) || 0);
     const serviceFee = Math.round(Number(body.serviceFee) || 0);
+    const discountPercent = Math.min(
+      100,
+      Math.max(0, Math.round(Number(body.discountPercent) || 0))
+    );
 
     // Update session
     await prisma.orderSession.update({
@@ -70,6 +74,7 @@ export async function POST(
         status: "ORDERED",
         deliveryFee,
         serviceFee,
+        discountPercent,
       },
     });
 
@@ -96,6 +101,7 @@ export async function POST(
     const uniqueUsers = userTotals.size;
     const extraPerPerson =
       uniqueUsers > 0 ? (deliveryFee + serviceFee) / uniqueUsers : 0;
+    const discountMultiplier = 1 - discountPercent / 100;
 
     // Send notifications via bot
     const bot = getBot();
@@ -110,7 +116,8 @@ export async function POST(
     let failedCount = 0;
 
     for (const [userId, data] of userTotals) {
-      const total = Math.round(data.total + extraPerPerson);
+      const foodDiscounted = data.total * discountMultiplier;
+      const total = Math.round(foodDiscounted + extraPerPerson);
       results.push({
         userId,
         firstName: data.firstName,
@@ -126,17 +133,25 @@ export async function POST(
             .filter(([uid]) => uid !== session.userId);
 
           const lines = others.map(([, d]) => {
-            const t = Math.round(d.total + extraPerPerson);
+            const t = Math.round(d.total * discountMultiplier + extraPerPerson);
             return `  ${d.firstName}\u00A0— ${fmtPrice(t)}`;
           });
 
           const totalToReceive = Math.round(
-            others.reduce((s, [, d]) => s + d.total + extraPerPerson, 0)
+            others.reduce(
+              (s, [, d]) => s + d.total * discountMultiplier + extraPerPerson,
+              0
+            )
           );
+
+          const discountLine =
+            discountPercent > 0
+              ? `\nСкидка на блюда: ${discountPercent}%`
+              : "";
 
           const summaryText =
             lines.length > 0
-              ? `Обед заказан! Ждём переводов:\n\n${lines.join("\n")}\n\nВсего к\u00A0получению: ${fmtPrice(totalToReceive)}`
+              ? `Обед заказан! Ждём переводов:\n\n${lines.join("\n")}${discountLine}\n\nВсего к\u00A0получению: ${fmtPrice(totalToReceive)}`
               : "Обед заказан! Ты был единственным участником.";
 
           await bot.api.sendMessage(Number(userId), summaryText);
@@ -144,13 +159,17 @@ export async function POST(
         } else {
           // Other participants get payment links for 3 banks
           const links = generatePaymentLinks(adminPhone, total);
-          const foodPrice = data.total;
+          const foodPrice = Math.round(foodDiscounted);
           const extra = Math.round(extraPerPerson);
+          const discountNote =
+            discountPercent > 0
+              ? ` Еда уже со скидкой ${discountPercent}%.`
+              : "";
 
           await bot.api.sendMessage(
             Number(userId),
             `Обед заказан. С\u00A0тебя ${fmtPrice(total)}. ` +
-              `${fmtPrice(foodPrice)} за\u00A0еду и\u00A0${fmtPrice(extra)} монополисту Яндексу.`,
+              `${fmtPrice(foodPrice)} за\u00A0еду и\u00A0${fmtPrice(extra)} монополисту Яндексу.${discountNote}`,
             {
               parse_mode: "HTML",
               link_preview_options: { is_disabled: true },
@@ -161,6 +180,7 @@ export async function POST(
                     { text: "Сбер", url: links.sber },
                     { text: "Т\u2011банк", url: links.tbank },
                   ],
+                  [{ text: "✅ Я перевёл", callback_data: `paid:${id}` }],
                 ],
               },
             }

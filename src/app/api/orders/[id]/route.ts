@@ -68,6 +68,9 @@ export async function GET(
           },
           orderBy: { id: "asc" },
         },
+        payments: {
+          select: { userId: true, createdAt: true },
+        },
       },
     });
 

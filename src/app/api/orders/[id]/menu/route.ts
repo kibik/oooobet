@@ -24,6 +24,7 @@ export async function GET(
         description: string | null;
         weight: string | null;
         imageUrl: string | null;
+        optionGroups: unknown;
       }>
     > = {};
 
@@ -38,6 +39,7 @@ export async function GET(
         description: item.description,
         weight: item.weight,
         imageUrl: item.imageUrl,
+        optionGroups: item.optionsJson ?? null,
       });
     }
 

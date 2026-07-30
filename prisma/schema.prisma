@@ -18,19 +18,22 @@ model User {
   items           OrderItem[]
   initiatedOrders OrderSession[] @relation("AdminRelation")
   authTokens      AuthToken[]
+  payments        Payment[]
 }
 
 model OrderSession {
-  id          String      @id @default(cuid())
-  url         String
-  status      String      @default("OPEN")
-  deliveryFee Int         @default(0)
-  serviceFee  Int         @default(0)
-  adminId     BigInt
-  admin       User        @relation("AdminRelation", fields: [adminId], references: [id])
-  items       OrderItem[]
-  menuItems   MenuItem[]
-  createdAt   DateTime    @default(now())
+  id              String      @id @default(cuid())
+  url             String
+  status          String      @default("OPEN")
+  deliveryFee     Int         @default(0)
+  serviceFee      Int         @default(0)
+  discountPercent Int         @default(0)
+  adminId         BigInt
+  admin           User        @relation("AdminRelation", fields: [adminId], references: [id])
+  items           OrderItem[]
+  menuItems       MenuItem[]
+  payments        Payment[]
+  createdAt       DateTime    @default(now())
 }
 
 model MenuItem {
@@ -43,6 +46,7 @@ model MenuItem {
   description String?
   weight      String?
   imageUrl    String?
+  optionsJson Json? // option groups from Yandex Eda (spiciness, sauces, drinks, ...)
 }
 
 model OrderItem {
@@ -53,6 +57,19 @@ model OrderItem {
   user      User         @relation(fields: [userId], references: [id])
   dishName  String
   price     Int
+  options   String? // chosen options, human-readable ("Соус: Сырный · Напиток: Кола")
+}
+
+// "I have paid" marks per participant per order session
+model Payment {
+  id        String       @id @default(cuid())
+  sessionId String
+  session   OrderSession @relation(fields: [sessionId], references: [id])
+  userId    BigInt
+  user      User         @relation(fields: [userId], references: [id])
+  createdAt DateTime     @default(now())
+
+  @@unique([sessionId, userId])
 }
 
 model AuthToken {

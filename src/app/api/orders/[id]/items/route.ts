@@ -37,7 +37,7 @@ export async function POST(
     }
 
     const body = await req.json();
-    const { dishName, price } = body;
+    const { dishName, price, options } = body;
 
     if (!dishName || typeof dishName !== "string" || dishName.trim() === "") {
       return NextResponse.json(
@@ -72,6 +72,10 @@ export async function POST(
         userId: BigInt(session.userId),
         dishName: dishName.trim(),
         price: Math.round(numPrice),
+        options:
+          typeof options === "string" && options.trim() !== ""
+            ? options.trim().slice(0, 500)
+            : null,
       },
       include: {
         user: {

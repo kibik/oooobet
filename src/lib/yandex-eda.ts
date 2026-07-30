@@ -3,6 +3,19 @@
  * Uses the public API: GET https://eda.yandex.ru/api/v2/menu/retrieve/{slug}
  */
 
+export interface MenuOptionChoice {
+  name: string;
+  price: number;
+}
+
+export interface MenuOptionGroup {
+  name: string;
+  required: boolean;
+  minSelected: number;
+  maxSelected: number;
+  options: MenuOptionChoice[];
+}
+
 export interface ParsedMenuItem {
   category: string;
   name: string;
@@ -10,6 +23,23 @@ export interface ParsedMenuItem {
   description: string | null;
   weight: string | null;
   imageUrl: string | null;
+  optionGroups: MenuOptionGroup[] | null;
+}
+
+interface YandexEdaOption {
+  id: number;
+  name: string;
+  price: number;
+  multiplier?: number;
+}
+
+interface YandexEdaOptionsGroup {
+  id: number;
+  name: string;
+  options: YandexEdaOption[];
+  required?: boolean;
+  minSelected?: number;
+  maxSelected?: number;
 }
 
 interface YandexEdaItem {
@@ -23,6 +53,7 @@ interface YandexEdaItem {
     uri: string;
     ratio?: number;
   };
+  optionsGroups?: YandexEdaOptionsGroup[];
 }
 
 interface YandexEdaCategory {
@@ -91,6 +122,30 @@ function resolveImageUrl(picture?: { uri: string }): string | null {
 }
 
 /**
+ * Parse option groups (spiciness, sauces, drink choice, ...) into a compact shape.
+ */
+function parseOptionGroups(
+  groups?: YandexEdaOptionsGroup[]
+): MenuOptionGroup[] | null {
+  if (!groups?.length) return null;
+
+  const parsed = groups
+    .filter((g) => g.options?.length)
+    .map((g) => ({
+      name: g.name,
+      required: g.required ?? false,
+      minSelected: g.minSelected ?? (g.required ? 1 : 0),
+      maxSelected: g.maxSelected ?? g.options.length,
+      options: g.options.map((o) => ({
+        name: o.name,
+        price: Math.round(o.price),
+      })),
+    }));
+
+  return parsed.length > 0 ? parsed : null;
+}
+
+/**
  * Fetch menu from Yandex Eda API and return parsed items.
  */
 export async function fetchMenu(
@@ -136,6 +191,7 @@ export async function fetchMenu(
         description: item.description || null,
         weight: item.weight || null,
         imageUrl: resolveImageUrl(item.picture),
+        optionGroups: parseOptionGroups(item.optionsGroups),
       });
     }
   }

@@ -35,12 +35,18 @@ function fmtPrice(n: number): string {
   return `${formatted}\u2009₽`;
 }
 
+// Yandex Eda CDN resizes on the fly — swap the 200x200 thumbnail for a big one
+function bigImageUrl(url: string): string {
+  return url.replace("-200x200.", "-500x500.");
+}
+
 // --- Types ---
 
 interface OrderItem {
   id: string;
   dishName: string;
   price: number;
+  options: string | null;
   userId: string;
   user: {
     id: string;
@@ -69,7 +75,22 @@ interface OrderSession {
     phoneNumber: string | null;
   };
   items: OrderItem[];
+  discountPercent: number;
+  payments?: Array<{ userId: string }>;
   createdAt: string;
+}
+
+interface OptionChoice {
+  name: string;
+  price: number;
+}
+
+interface OptionGroup {
+  name: string;
+  required: boolean;
+  minSelected: number;
+  maxSelected: number;
+  options: OptionChoice[];
 }
 
 interface MenuItem {
@@ -79,6 +100,7 @@ interface MenuItem {
   description: string | null;
   weight: string | null;
   imageUrl: string | null;
+  optionGroups?: OptionGroup[] | null;
 }
 
 interface MenuData {
@@ -115,8 +137,23 @@ export default function OrderPage({
   // Admin finalize state
   const [deliveryFee, setDeliveryFee] = useState("");
   const [serviceFee, setServiceFee] = useState("");
+  const [discountPct, setDiscountPct] = useState("");
   const [finalizing, setFinalizing] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  // Hover preview (desktop only)
+  const [hoverPreview, setHoverPreview] = useState<{
+    item: MenuItem;
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+
+  // Options dialog (dish with options: spiciness, sauce, drink, ...)
+  const [optionsItem, setOptionsItem] = useState<MenuItem | null>(null);
+  const [optionSelections, setOptionSelections] = useState<
+    Record<number, number[]>
+  >({});
 
   // Fly-to-cart animation
   const [flyingItem, setFlyingItem] = useState<{
@@ -179,7 +216,19 @@ export default function OrderPage({
 
   // --- Handlers ---
 
+  const hasOptions = (menuItem: MenuItem) =>
+    Array.isArray(menuItem.optionGroups) && menuItem.optionGroups.length > 0;
+
+  const openOptionsDialog = (menuItem: MenuItem) => {
+    setOptionSelections({});
+    setOptionsItem(menuItem);
+  };
+
   const handleWantThis = (menuItem: MenuItem, e: React.MouseEvent) => {
+    if (hasOptions(menuItem)) {
+      openOptionsDialog(menuItem);
+      return;
+    }
     flyProcessedRef.current = false;
     const row = (e.target as HTMLElement).closest("[data-menu-row]");
     const img = row?.querySelector("img");
@@ -199,7 +248,10 @@ export default function OrderPage({
     });
   };
 
-  const handleAddFromMenu = async (menuItem: MenuItem) => {
+  const handleAddFromMenu = async (
+    menuItem: MenuItem,
+    extra?: { price: number; options: string }
+  ) => {
     if (!user) return;
     try {
       const res = await fetch(`/api/orders/${id}/items`, {
@@ -207,7 +259,8 @@ export default function OrderPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           dishName: menuItem.name,
-          price: menuItem.price,
+          price: extra?.price ?? menuItem.price,
+          options: extra?.options || undefined,
         }),
       });
       if (res.ok) {
@@ -229,6 +282,89 @@ export default function OrderPage({
     setFlyingItem(null);
     setFlyPhase("from");
   };
+
+  // --- Options dialog logic ---
+
+  const toggleOption = (groupIdx: number, optIdx: number) => {
+    if (!optionsItem?.optionGroups) return;
+    const group = optionsItem.optionGroups[groupIdx];
+    setOptionSelections((prev) => {
+      const current = prev[groupIdx] || [];
+      let next: number[];
+      if (group.maxSelected === 1) {
+        // radio behavior
+        next = current.includes(optIdx) && !group.required ? [] : [optIdx];
+      } else if (current.includes(optIdx)) {
+        next = current.filter((i) => i !== optIdx);
+      } else if (current.length >= group.maxSelected) {
+        return prev; // limit reached
+      } else {
+        next = [...current, optIdx];
+      }
+      return { ...prev, [groupIdx]: next };
+    });
+  };
+
+  const optionsExtraPrice = (() => {
+    if (!optionsItem?.optionGroups) return 0;
+    return optionsItem.optionGroups.reduce((sum, group, gi) => {
+      const selected = optionSelections[gi] || [];
+      return (
+        sum + selected.reduce((s, oi) => s + (group.options[oi]?.price || 0), 0)
+      );
+    }, 0);
+  })();
+
+  const optionsValid = (() => {
+    if (!optionsItem?.optionGroups) return true;
+    return optionsItem.optionGroups.every((group, gi) => {
+      const count = (optionSelections[gi] || []).length;
+      const min = group.required ? Math.max(1, group.minSelected) : group.minSelected;
+      return count >= min;
+    });
+  })();
+
+  const handleConfirmOptions = () => {
+    if (!optionsItem?.optionGroups || !optionsValid) return;
+    const parts: string[] = [];
+    optionsItem.optionGroups.forEach((group, gi) => {
+      const selected = optionSelections[gi] || [];
+      if (selected.length === 0) return;
+      const names = selected.map((oi) => group.options[oi].name).join(", ");
+      parts.push(`${group.name}: ${names}`);
+    });
+    handleAddFromMenu(optionsItem, {
+      price: optionsItem.price + optionsExtraPrice,
+      options: parts.join(" · "),
+    });
+    setOptionsItem(null);
+  };
+
+  // --- Hover preview logic (desktop pointers only) ---
+
+  const handleMenuRowEnter = (menuItem: MenuItem, e: React.MouseEvent) => {
+    if (!menuItem.imageUrl && !menuItem.description) return;
+    if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches)
+      return;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const panelWidth = 320;
+    const gap = 12;
+    let left: number;
+    if (rect.right + gap + panelWidth <= window.innerWidth - 8) {
+      left = rect.right + gap;
+    } else if (rect.left - gap - panelWidth >= 8) {
+      left = rect.left - gap - panelWidth;
+    } else {
+      return; // no room on the sides — skip (touch/narrow screens)
+    }
+    const top = Math.max(
+      8,
+      Math.min(rect.top, window.innerHeight - 460)
+    );
+    setHoverPreview({ item: menuItem, top, left, width: panelWidth });
+  };
+
+  const handleMenuRowLeave = () => setHoverPreview(null);
 
   const handleAddManual = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -286,6 +422,7 @@ export default function OrderPage({
         body: JSON.stringify({
           deliveryFee: Number(deliveryFee) || 0,
           serviceFee: Number(serviceFee) || 0,
+          discountPercent: Number(discountPct) || 0,
         }),
       });
       if (res.ok) {
@@ -335,8 +472,10 @@ export default function OrderPage({
   const isAdmin = user && session && user.id === session.adminId;
   const uniqueUsers = groupedItems ? Object.keys(groupedItems).length : 0;
 
-  // Count how many of each menu item the current user has ordered
+  // Count how many of each menu item the current user has ordered.
+  // Items with options can differ in price, so we also count by dish name.
   const myItemCounts: Record<string, { count: number; itemIds: string[] }> = {};
+  const myNameCounts: Record<string, { count: number; itemIds: string[] }> = {};
   if (user && session) {
     for (const item of session.items) {
       if (item.userId === user.id) {
@@ -346,9 +485,19 @@ export default function OrderPage({
         }
         myItemCounts[key].count++;
         myItemCounts[key].itemIds.push(item.id);
+
+        if (!myNameCounts[item.dishName]) {
+          myNameCounts[item.dishName] = { count: 0, itemIds: [] };
+        }
+        myNameCounts[item.dishName].count++;
+        myNameCounts[item.dishName].itemIds.push(item.id);
       }
     }
   }
+
+  const paidUserIds = new Set(
+    (session?.payments || []).map((p) => p.userId)
+  );
 
   const hasMenu = menu && menu.total > 0;
   const categories = menu ? Object.keys(menu.categories) : [];
@@ -574,18 +723,29 @@ export default function OrderPage({
                       </div>
 
                       {/* Menu items */}
-                      <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                      <div
+                        className="space-y-2 max-h-[60vh] overflow-y-auto"
+                        onScroll={handleMenuRowLeave}
+                      >
                         {filteredMenuItems.length > 0 ? (
                           filteredMenuItems.map((menuItem) => {
+                            const withOptions = hasOptions(menuItem);
                             const key = `${menuItem.name}__${menuItem.price}`;
-                            const myCount = myItemCounts[key]?.count || 0;
-                            const myIds = myItemCounts[key]?.itemIds || [];
+                            const counts = withOptions
+                              ? myNameCounts[menuItem.name]
+                              : myItemCounts[key];
+                            const myCount = counts?.count || 0;
+                            const myIds = counts?.itemIds || [];
 
                             return (
                               <div
                                 key={menuItem.id}
                                 data-menu-row
                                 className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 hover:shadow-sm transition-all duration-150"
+                                onMouseEnter={(e) =>
+                                  handleMenuRowEnter(menuItem, e)
+                                }
+                                onMouseLeave={handleMenuRowLeave}
                               >
                                 {/* Image */}
                                 {menuItem.imageUrl && (
@@ -604,9 +764,11 @@ export default function OrderPage({
                                   <div className="font-medium text-sm leading-tight">
                                     {menuItem.name}
                                   </div>
-                                  {menuItem.weight && (
+                                  {(menuItem.weight || withOptions) && (
                                     <span className="text-xs text-muted-foreground">
                                       {menuItem.weight}
+                                      {menuItem.weight && withOptions && " · "}
+                                      {withOptions && "есть опции"}
                                     </span>
                                   )}
                                   <div className="font-semibold text-sm mt-0.5">
@@ -639,7 +801,9 @@ export default function OrderPage({
                                         size="icon"
                                         className="h-8 w-8 rounded-full"
                                         onClick={() =>
-                                          handleAddFromMenu(menuItem)
+                                          withOptions
+                                            ? openOptionsDialog(menuItem)
+                                            : handleAddFromMenu(menuItem)
                                         }
                                       >
                                         <span className="text-lg leading-none">
@@ -830,7 +994,14 @@ export default function OrderPage({
                               key={item.id}
                               className="flex items-center justify-between py-1 text-sm"
                             >
-                              <span>{item.dishName}</span>
+                              <span>
+                                {item.dishName}
+                                {item.options && (
+                                  <span className="block text-xs text-muted-foreground">
+                                    {item.options}
+                                  </span>
+                                )}
+                              </span>
                               <div className="flex items-center gap-2 shrink-0">
                                 {session.status === "OPEN" &&
                                   user.id === userId && (
@@ -907,6 +1078,20 @@ export default function OrderPage({
                           onChange={(e) => setServiceFee(e.target.value)}
                         />
                       </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="discountPct">
+                          Скидка на{" "}блюда, %
+                        </Label>
+                        <Input
+                          id="discountPct"
+                          type="number"
+                          min="0"
+                          max="100"
+                          placeholder="0"
+                          value={discountPct}
+                          onChange={(e) => setDiscountPct(e.target.value)}
+                        />
+                      </div>
                       {uniqueUsers > 0 && (
                         <div className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-md">
                           <p>
@@ -922,7 +1107,24 @@ export default function OrderPage({
                             </strong>
                           </p>
                           <p className="mt-1">
-                            Общая сумма блюд: <strong>{fmtPrice(totalSum)}</strong>
+                            Общая сумма блюд:{" "}
+                            <strong>
+                              {Number(discountPct) > 0 ? (
+                                <>
+                                  <span className="line-through font-normal">
+                                    {fmtPrice(totalSum)}
+                                  </span>{" "}
+                                  {fmtPrice(
+                                    totalSum *
+                                      (1 -
+                                        Math.min(100, Number(discountPct)) /
+                                          100)
+                                  )}
+                                </>
+                              ) : (
+                                fmtPrice(totalSum)
+                              )}
+                            </strong>
                           </p>
                         </div>
                       )}
@@ -949,6 +1151,12 @@ export default function OrderPage({
                   <CardTitle className="text-lg">Кто что должен</CardTitle>
                   <CardDescription>
                     Доставка {fmtPrice(session.deliveryFee)} и{"\u00A0"}сервисный сбор {fmtPrice(session.serviceFee)}
+                    {session.discountPercent > 0 && (
+                      <>
+                        {" "}
+                        · скидка на блюда {session.discountPercent}%
+                      </>
+                    )}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -958,14 +1166,25 @@ export default function OrderPage({
                         const extra =
                           (session.deliveryFee + session.serviceFee) /
                           uniqueUsers;
-                        const finalTotal = Math.round(total + extra);
+                        const discountMult =
+                          1 - (session.discountPercent || 0) / 100;
+                        const finalTotal = Math.round(
+                          total * discountMult + extra
+                        );
+                        const hasPaid = paidUserIds.has(userId);
 
                         return (
                           <div
                             key={userId}
                             className="flex items-center justify-between py-2 px-3 rounded-md bg-muted/50"
                           >
-                            <span className="text-sm flex items-center gap-1.5">
+                            <span
+                              className={`text-sm flex items-center gap-1.5 ${
+                                hasPaid
+                                  ? "line-through text-muted-foreground"
+                                  : ""
+                              }`}
+                            >
                               {(itemUser.avatarUrl ?? itemUser.photoUrl) ? (
                                 <img
                                   src={itemUser.avatarUrl ?? itemUser.photoUrl ?? ""}
@@ -979,8 +1198,21 @@ export default function OrderPage({
                               )}
                               {itemUser.firstName} {itemUser.lastName || ""}
                             </span>
-                            <span className="font-semibold tabular-nums text-right min-w-[5rem]">
-                              {fmtPrice(finalTotal)}
+                            <span className="flex items-center gap-2 shrink-0">
+                              {hasPaid && (
+                                <span className="text-xs font-medium text-green-600 dark:text-green-500">
+                                  перевёл ✅
+                                </span>
+                              )}
+                              <span
+                                className={`font-semibold tabular-nums text-right min-w-[5rem] ${
+                                  hasPaid
+                                    ? "line-through text-muted-foreground font-normal"
+                                    : ""
+                                }`}
+                              >
+                                {fmtPrice(finalTotal)}
+                              </span>
                             </span>
                           </div>
                         );
@@ -991,6 +1223,132 @@ export default function OrderPage({
             )}
           </>
         )}
+
+        {/* Hover preview: big photo + состав (desktop only) */}
+        {hoverPreview && (
+          <div
+            className="fixed z-[9998] pointer-events-none rounded-xl border bg-popover text-popover-foreground shadow-xl overflow-hidden"
+            style={{
+              top: hoverPreview.top,
+              left: hoverPreview.left,
+              width: hoverPreview.width,
+            }}
+          >
+            {hoverPreview.item.imageUrl && (
+              <img
+                src={bigImageUrl(hoverPreview.item.imageUrl)}
+                alt={hoverPreview.item.name}
+                className="w-full aspect-square object-cover"
+              />
+            )}
+            <div className="p-3 space-y-1">
+              <div className="font-semibold text-sm leading-tight">
+                {hoverPreview.item.name}
+              </div>
+              {hoverPreview.item.weight && (
+                <div className="text-xs text-muted-foreground">
+                  {hoverPreview.item.weight}
+                </div>
+              )}
+              {hoverPreview.item.description && (
+                <p className="text-xs text-muted-foreground leading-snug max-h-32 overflow-hidden">
+                  {hoverPreview.item.description}
+                </p>
+              )}
+              <div className="font-semibold text-sm pt-1">
+                {fmtPrice(hoverPreview.item.price)}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Options dialog */}
+        <Dialog
+          open={!!optionsItem}
+          onOpenChange={(open) => {
+            if (!open) setOptionsItem(null);
+          }}
+        >
+          <DialogContent className="max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{optionsItem?.name}</DialogTitle>
+              <DialogDescription>
+                Выбери опции — они попадут в{" "}заказ.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-5 py-2">
+              {optionsItem?.optionGroups?.map((group, gi) => {
+                const selected = optionSelections[gi] || [];
+                const isRadio = group.maxSelected === 1;
+                return (
+                  <div key={gi} className="space-y-2">
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      {group.name}
+                      {group.required && (
+                        <span className="text-xs text-muted-foreground font-normal">
+                          обязательно
+                        </span>
+                      )}
+                      {!isRadio && group.maxSelected > 1 && (
+                        <span className="text-xs text-muted-foreground font-normal">
+                          до {group.maxSelected}
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      {group.options.map((opt, oi) => {
+                        const isSelected = selected.includes(oi);
+                        return (
+                          <button
+                            key={oi}
+                            type="button"
+                            onClick={() => toggleOption(gi, oi)}
+                            className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-md border text-sm text-left transition-colors cursor-pointer ${
+                              isSelected
+                                ? "border-primary bg-primary/10"
+                                : "border-input hover:bg-accent/50"
+                            }`}
+                          >
+                            <span className="flex items-center gap-2">
+                              <span
+                                className={`shrink-0 w-4 h-4 border flex items-center justify-center text-[10px] ${
+                                  isRadio ? "rounded-full" : "rounded-sm"
+                                } ${
+                                  isSelected
+                                    ? "bg-primary border-primary text-primary-foreground"
+                                    : "border-muted-foreground/40"
+                                }`}
+                              >
+                                {isSelected && "✓"}
+                              </span>
+                              {opt.name}
+                            </span>
+                            {opt.price > 0 && (
+                              <span className="text-muted-foreground tabular-nums shrink-0">
+                                +{fmtPrice(opt.price)}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <DialogFooter>
+              <Button
+                onClick={handleConfirmOptions}
+                disabled={!optionsValid}
+                className="w-full"
+              >
+                {optionsItem
+                  ? `Добавить за ${fmtPrice(optionsItem.price + optionsExtraPrice)}`
+                  : "Добавить"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Fly-to-cart overlay */}
         {flyingItem && (

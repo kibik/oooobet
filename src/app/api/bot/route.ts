@@ -2,9 +2,49 @@ import { NextRequest, NextResponse } from "next/server";
 import { webhookCallback } from "grammy";
 import { getBot } from "@/lib/bot";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { parseSlug, fetchMenu } from "@/lib/yandex-eda";
 
 const bot = getBot();
+
+const COFFEE_FACTS = [
+  "Кофеин повышает кортизол — организм думает, что вы в стрессе. Постоянно.",
+  "Чашка кофе с едой снижает усвоение железа на 30–40%. Анемия не дремлет.",
+  "Кофе за 4 часа до сна нарушает глубокий сон. Мозг не восстанавливается.",
+  "Нефильтрованный кофе (эспрессо, турка) повышает «плохой» холестерин ЛПНП.",
+  "Горячий кофе выше 65°C увеличивает риск рака пищевода (ВОЗ).",
+  "4+ чашки в день — риск аритмии и повышенного давления.",
+  "Кофе натощак усиливает выброс кислоты. Гастрит и изжога в подарок.",
+  "Кофеин вызывает привыкание. Отмена — головные боли и раздражительность.",
+  "Кофе вымывает кальций. Риск остеопороза при злоупотреблении.",
+  "Кофеин сужает сосуды мозга. При мигрени — временное облегчение, потом откат.",
+  "Кофе стимулирует перистальтику. Регулярное слабительное — не лучшая идея.",
+  "Кофеин повышает глазное давление. Осторожно при глаукоме.",
+  "Кофе мешает усвоению витаминов группы B и магния.",
+  "Кофеин ускоряет сердцебиение. При тахикардии — лишняя нагрузка.",
+  "Кофе обезвоживает. На каждую чашку — стакан воды впридачу.",
+  "Кофе натощак в 7–8 утра усиливает пик кортизола. Тревожность растёт.",
+  "Кофеин может провоцировать приступы у людей с эпилепсией.",
+  "Кофе окрашивает эмаль. Жёлтые зубы — не миф.",
+  "Кофеин проникает через плаценту. Беременным — осторожно.",
+  "Кофе повышает кислотность. При язве и рефлюксе — обострения.",
+  "Кофеин мешает засыпанию даже если «не чувствуете» эффекта.",
+  "Кофе на пустой желудок раздражает слизистую. Долгосрочно — воспаление.",
+];
+
+const COFFEE_FACTS_RECENT: string[] = [];
+const COFFEE_FACTS_RECENT_MAX = 20;
+
+function getCoffeeFact(): string {
+  const available = COFFEE_FACTS.filter((f) => !COFFEE_FACTS_RECENT.includes(f));
+  const pool = available.length > 0 ? available : COFFEE_FACTS;
+  const fact = pickRandom(pool);
+  COFFEE_FACTS_RECENT.push(fact);
+  if (COFFEE_FACTS_RECENT.length > COFFEE_FACTS_RECENT_MAX) {
+    COFFEE_FACTS_RECENT.shift();
+  }
+  return fact;
+}
 
 const OBED_PHRASES = [
   "🅾️🅱️🅴🅳",
@@ -193,6 +233,12 @@ bot.on("message:text", async (ctx) => {
   const tgUser = ctx.from;
   const isGroup = ctx.chat.type === "group" || ctx.chat.type === "supergroup";
 
+  // Coffee harm facts — react to "кофе", "кофию", "кофий" (whole words)
+  if (/(?:^|[\s,.!?])(кофе|кофию|кофий)(?:[\s,.!?]|$)/iu.test(text)) {
+    await ctx.reply(getCoffeeFact());
+    return;
+  }
+
   // Check if the message contains a Yandex Eda link
   const edaRegex = /https?:\/\/eda\.yandex\.ru\S*/i;
   const match = text.match(edaRegex);
@@ -301,6 +347,9 @@ async function createOrder(
             description: item.description,
             weight: item.weight,
             imageUrl: item.imageUrl,
+            optionsJson: item.optionGroups
+              ? (JSON.parse(JSON.stringify(item.optionGroups)) as Prisma.InputJsonValue)
+              : undefined,
           })),
         });
         menuCount = menuItems.length;
@@ -346,6 +395,77 @@ async function createOrder(
     }
   );
 }
+
+// "I paid" button on the payment message
+bot.callbackQuery(/^paid:(.+)$/, async (ctx) => {
+  const sessionId = ctx.match[1];
+  const tgUser = ctx.from;
+
+  try {
+    const orderSession = await prisma.orderSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, adminId: true },
+    });
+
+    if (!orderSession) {
+      await ctx.answerCallbackQuery({ text: "Заказ не найден 🤷" });
+      return;
+    }
+
+    const existing = await prisma.payment.findUnique({
+      where: {
+        sessionId_userId: {
+          sessionId,
+          userId: BigInt(tgUser.id),
+        },
+      },
+    });
+
+    if (!existing) {
+      await prisma.payment.create({
+        data: { sessionId, userId: BigInt(tgUser.id) },
+      });
+    }
+
+    await ctx.answerCallbackQuery({ text: "Принято! 💸" });
+
+    // Remove the "I paid" button, keep bank links, append confirmation
+    const msg = ctx.callbackQuery.message;
+    if (msg) {
+      const keyboard = msg.reply_markup?.inline_keyboard
+        ?.map((row) => row.filter((btn) => !("callback_data" in btn)))
+        .filter((row) => row.length > 0);
+      try {
+        await ctx.editMessageText(
+          `${msg.text}\n\n✅ Перевод отмечен`,
+          keyboard && keyboard.length > 0
+            ? { reply_markup: { inline_keyboard: keyboard } }
+            : undefined
+        );
+      } catch {
+        /* message too old to edit — not a problem */
+      }
+    }
+
+    // Notify the admin (unless it's the admin pressing their own button)
+    if (!existing && orderSession.adminId !== BigInt(tgUser.id)) {
+      const name = [tgUser.first_name, tgUser.last_name]
+        .filter(Boolean)
+        .join(" ");
+      try {
+        await bot.api.sendMessage(
+          Number(orderSession.adminId),
+          `💸 ${name} отметил перевод по заказу`
+        );
+      } catch {
+        /* admin might have blocked the bot */
+      }
+    }
+  } catch (err) {
+    console.error("paid callback error:", err);
+    await ctx.answerCallbackQuery({ text: "Что-то пошло не так, попробуй ещё раз" });
+  }
+});
 
 // Webhook handler
 const handleUpdate = webhookCallback(bot, "std/http");
