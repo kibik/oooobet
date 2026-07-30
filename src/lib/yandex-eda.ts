@@ -42,10 +42,18 @@ interface YandexEdaOptionsGroup {
   maxSelected?: number;
 }
 
+// Extra description blocks ("Состав", ...) — only sent when the request
+// carries the `x-platform: desktop_web` header.
+interface YandexEdaDescription {
+  title?: string;
+  text?: string;
+}
+
 interface YandexEdaItem {
   id: number;
   name: string;
   description?: string;
+  descriptions?: YandexEdaDescription[];
   price: number;
   available?: boolean;
   weight?: string;
@@ -146,6 +154,20 @@ function parseOptionGroups(
 }
 
 /**
+ * Ingredients text from the "Состав" description block, if the restaurant filled it in.
+ */
+function parseIngredients(
+  descriptions?: YandexEdaDescription[]
+): string | null {
+  if (!descriptions?.length) return null;
+  const block =
+    descriptions.find((d) => /состав|ingredient/i.test(d.title || "")) ??
+    descriptions[0];
+  const text = block?.text?.trim();
+  return text ? text : null;
+}
+
+/**
  * Fetch menu from Yandex Eda API and return parsed items.
  */
 export async function fetchMenu(
@@ -159,6 +181,8 @@ export async function fetchMenu(
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       Accept: "application/json",
+      // Without this the API omits the `descriptions` blocks (ingredients)
+      "x-platform": "desktop_web",
     },
   });
 
@@ -188,7 +212,8 @@ export async function fetchMenu(
         category: category.name,
         name: item.name,
         price: Math.round(item.price),
-        description: item.description || null,
+        description:
+          item.description?.trim() || parseIngredients(item.descriptions),
         weight: item.weight || null,
         imageUrl: resolveImageUrl(item.picture),
         optionGroups: parseOptionGroups(item.optionsGroups),
