@@ -347,21 +347,42 @@ export default function OrderPage({
     if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches)
       return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const panelWidth = 320;
     const gap = 12;
-    let left: number;
-    if (rect.right + gap + panelWidth <= window.innerWidth - 8) {
-      left = rect.right + gap;
-    } else if (rect.left - gap - panelWidth >= 8) {
-      left = rect.left - gap - panelWidth;
-    } else {
-      return; // no room on the sides — skip (touch/narrow screens)
+    const margin = 8;
+
+    // Prefer a side panel; shrink it a bit on narrower windows
+    for (const width of [320, 250]) {
+      let left: number | null = null;
+      if (rect.right + gap + width <= window.innerWidth - margin) {
+        left = rect.right + gap;
+      } else if (rect.left - gap - width >= margin) {
+        left = rect.left - gap - width;
+      }
+      if (left !== null) {
+        const top = Math.max(
+          margin,
+          Math.min(rect.top, window.innerHeight - (width + 140))
+        );
+        setHoverPreview({ item: menuItem, top, left, width });
+        return;
+      }
     }
-    const top = Math.max(
-      8,
-      Math.min(rect.top, window.innerHeight - 460)
+
+    // No side room — show the panel below the row (or above near the bottom)
+    const width = Math.min(300, window.innerWidth - margin * 2);
+    const panelH = width + 130; // square image + text block
+    const left = Math.max(
+      margin,
+      Math.min(
+        rect.left + rect.width / 2 - width / 2,
+        window.innerWidth - width - margin
+      )
     );
-    setHoverPreview({ item: menuItem, top, left, width: panelWidth });
+    const top =
+      rect.bottom + gap + panelH <= window.innerHeight - margin
+        ? rect.bottom + gap
+        : Math.max(margin, rect.top - gap - panelH);
+    setHoverPreview({ item: menuItem, top, left, width });
   };
 
   const handleMenuRowLeave = () => setHoverPreview(null);
