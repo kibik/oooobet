@@ -14,12 +14,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Bad path" }, { status: 400 });
   }
 
+  const method = searchParams.get("method") || "GET";
+  const body = searchParams.get("body");
+
   const res = await fetch(`https://eda.yandex.ru${path}`, {
+    method,
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       Accept: "application/json",
+      ...(body ? { "Content-Type": "application/json" } : {}),
     },
+    ...(body ? { body } : {}),
   });
 
   const text = await res.text();
