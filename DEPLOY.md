@@ -34,7 +34,7 @@ git push -u origin main
 
 | Переменная | Описание |
 |------------|----------|
-| `NEXT_PUBLIC_BASE_URL` | **После первого деплоя** — URL приложения (например `https://ooobed-production-xxxx.up.railway.app`). Взять в Settings → Domains. |
+| `NEXT_PUBLIC_BASE_URL` | **После первого деплоя** — URL приложения (например `https://obet.collabo.tools` или Railway-домен `https://ooobed-production-xxxx.up.railway.app`). Взять в Settings → Domains. |
 | `TELEGRAM_BOT_TOKEN` | Токен от @BotFather |
 | `NEXT_PUBLIC_BOT_USERNAME` | Юзернейм бота без `@` (например `ooobet_bot`) |
 | `SESSION_SECRET` | Случайная строка ≥ 32 символов. Сгенерировать: `openssl rand -base64 32` |
@@ -43,8 +43,8 @@ git push -u origin main
 
 ## 4. Домен и BASE_URL
 
-1. В сервисе приложения: **Settings → Networking → Generate Domain**
-2. Скопируй URL (например `https://ooobed-production-xxxx.up.railway.app`)
+1. В сервисе приложения: **Settings → Networking → Generate Domain** (или **Add Custom Domain** → `obet.collabo.tools`)
+2. Скопируй URL (например `https://obet.collabo.tools` или `https://ooobed-production-xxxx.up.railway.app`)
 3. В переменных добавь/измени `NEXT_PUBLIC_BASE_URL` на этот URL
 4. Сделай **Redeploy**, чтобы новый `NEXT_PUBLIC_BASE_URL` попал в сборку
 
