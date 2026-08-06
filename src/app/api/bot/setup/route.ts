@@ -25,8 +25,9 @@ export async function GET(req: NextRequest) {
 
     const webhookUrl = `${baseUrl}/api/bot`;
 
+    // callback_query is required for inline buttons ("Я перевёл") to reach the bot
     await bot.api.setWebhook(webhookUrl, {
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "callback_query"],
     });
 
     const info = await bot.api.getWebhookInfo();
