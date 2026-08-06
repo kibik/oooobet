@@ -155,3 +155,15 @@
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+/* Data-viz series color (validated for both surfaces: contrast >= 3:1) */
+.viz-root {
+  --viz-series-1: #2a78d6;
+}
+
+.dark .viz-root {
+  --viz-series-1: #3987e5;
+}
+
+.viz-bar {
+  background-color: var(--viz-series-1);
+}
