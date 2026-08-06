@@ -48,6 +48,14 @@ const dateFmt = new Intl.DateTimeFormat("ru-RU", {
   timeZone: "Europe/Moscow",
 });
 
+function pluralizeTimes(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return "раз";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "раза";
+  return "раз";
+}
+
 function pluralizeOrders(n: number): string {
   const mod10 = n % 10;
   const mod100 = n % 100;
@@ -136,7 +144,10 @@ export default async function HistoryPage() {
     .sort((a, b) => b.spent - a.spent);
 
   const maxSpent = ranking[0]?.spent || 1;
-  const topDish = [...dishCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+  const topDishes = [...dishCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 10);
+  const maxDishCount = topDishes[0]?.[1] || 1;
 
   return (
     <div className="min-h-screen">
@@ -245,17 +256,41 @@ export default async function HistoryPage() {
                 ))}
               </div>
 
-              {topDish && (
+              {topDishes.length > 0 && (
                 <>
                   <Separator />
-                  <p className="text-xs text-muted-foreground">
-                    Хит всех времён:{" "}
-                    <span className="text-foreground font-medium">
-                      {topDish[0]}
-                    </span>{" "}
-                    — заказали {topDish[1]}{" "}
-                    {topDish[1] === 1 ? "раз" : "раза"}
-                  </p>
+                  <div className="space-y-1">
+                    <h2 className="text-sm font-medium">Хиты всех времён</h2>
+                    <p className="text-xs text-muted-foreground">
+                      Топ-10 блюд по{" "}числу заказов
+                    </p>
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1.5">
+                    {topDishes.map(([dish, count], i) => (
+                      <div
+                        key={dish}
+                        className="flex items-center gap-2 text-sm"
+                        title={`${dish} — ${count} ${pluralizeTimes(count)}`}
+                      >
+                        <span className="text-xs text-muted-foreground tabular-nums w-4 shrink-0 text-right">
+                          {i + 1}
+                        </span>
+                        <span className="truncate flex-1 min-w-0">{dish}</span>
+                        {/* Fixed-width track keeps one baseline across rows */}
+                        <span className="w-10 shrink-0 hidden sm:block">
+                          <span
+                            className="block h-1.5 rounded-r-[4px] viz-bar"
+                            style={{
+                              width: `${Math.max(8, (count / maxDishCount) * 100)}%`,
+                            }}
+                          />
+                        </span>
+                        <span className="text-xs text-muted-foreground tabular-nums shrink-0 w-14 text-right">
+                          {count} {pluralizeTimes(count)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </>
               )}
             </CardContent>
