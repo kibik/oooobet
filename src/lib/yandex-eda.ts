@@ -167,26 +167,67 @@ function parseIngredients(
   return text ? text : null;
 }
 
+const API_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  Accept: "application/json",
+  // Without this the API omits the `descriptions` blocks (ingredients)
+  "x-platform": "desktop_web",
+};
+
+interface BrandPlaceResponse {
+  payload?: {
+    foundPlace?: { place?: { slug?: string } };
+  };
+}
+
+/**
+ * Links like /moscow/r/{brand} carry a brand slug, and the menu API only knows
+ * per-branch place slugs. Resolve brand → place the way the site itself does.
+ */
+export async function resolvePlaceSlug(
+  brandSlug: string,
+  regionId: number = 1
+): Promise<string | null> {
+  const url = `https://eda.yandex.ru/eats/v1/eats-catalog/v2/brand/place?brand_slug=${encodeURIComponent(brandSlug)}&region_id=${regionId}`;
+
+  try {
+    const res = await fetch(url, { headers: API_HEADERS });
+    if (!res.ok) return null;
+    const data: BrandPlaceResponse = await res.json();
+    const slug = data?.payload?.foundPlace?.place?.slug;
+    return slug && slug !== brandSlug ? slug : null;
+  } catch (err) {
+    console.error(`Failed to resolve brand slug "${brandSlug}":`, err);
+    return null;
+  }
+}
+
 /**
  * Fetch menu from Yandex Eda API and return parsed items.
  */
 export async function fetchMenu(
   slug: string,
-  regionId: number = 1
+  regionId: number = 1,
+  allowBrandResolve: boolean = true
 ): Promise<ParsedMenuItem[]> {
   const url = `https://eda.yandex.ru/api/v2/menu/retrieve/${encodeURIComponent(slug)}?regionId=${regionId}&autoTranslate=false`;
 
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      Accept: "application/json",
-      // Without this the API omits the `descriptions` blocks (ingredients)
-      "x-platform": "desktop_web",
-    },
-  });
+  // A brand slug (from /{city}/r/{brand} links) has no menu of its own —
+  // resolve it to a branch and retry once.
+  const retryAsBrand = async (): Promise<ParsedMenuItem[]> => {
+    if (!allowBrandResolve) return [];
+    const placeSlug = await resolvePlaceSlug(slug, regionId);
+    if (!placeSlug) return [];
+    console.log(`Resolved brand slug "${slug}" to place "${placeSlug}"`);
+    return fetchMenu(placeSlug, regionId, false);
+  };
+
+  const res = await fetch(url, { headers: API_HEADERS });
 
   if (!res.ok) {
+    const viaBrand = await retryAsBrand();
+    if (viaBrand.length > 0) return viaBrand;
     console.error(
       `Yandex Eda API returned ${res.status} for slug "${slug}"`
     );
@@ -196,7 +237,7 @@ export async function fetchMenu(
   const data: YandexEdaMenuResponse = await res.json();
 
   if (!data?.payload?.categories) {
-    return [];
+    return retryAsBrand();
   }
 
   const items: ParsedMenuItem[] = [];
@@ -221,5 +262,6 @@ export async function fetchMenu(
     }
   }
 
-  return items;
+  // An empty menu for a brand slug means the same thing as a 404
+  return items.length > 0 ? items : retryAsBrand();
 }

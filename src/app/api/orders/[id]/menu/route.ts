@@ -8,10 +8,11 @@ import { parseSlug, fetchMenu } from "@/lib/yandex-eda";
 const backfillAttempted = new Set<string>();
 
 /**
- * Refetch the menu from Yandex Eda and fill in descriptions/options for a
- * session whose cached menu predates those fields. Matches items by name.
+ * Refetch the menu from Yandex Eda for a session whose cached menu is empty
+ * (the link was a brand slug the parser couldn't resolve yet) or predates the
+ * descriptions/options fields. Existing rows are matched by name.
  */
-async function backfillDescriptions(sessionId: string): Promise<void> {
+async function backfillMenu(sessionId: string): Promise<void> {
   const session = await prisma.orderSession.findUnique({
     where: { id: sessionId },
     select: { url: true },
@@ -21,6 +22,29 @@ async function backfillDescriptions(sessionId: string): Promise<void> {
 
   const fresh = await fetchMenu(slug);
   if (fresh.length === 0) return;
+
+  const cachedCount = await prisma.menuItem.count({ where: { sessionId } });
+
+  // Nothing cached at all — store the whole menu
+  if (cachedCount === 0) {
+    await prisma.menuItem.createMany({
+      data: fresh.map((item) => ({
+        sessionId,
+        category: item.category,
+        name: item.name,
+        price: item.price,
+        description: item.description,
+        weight: item.weight,
+        imageUrl: item.imageUrl,
+        optionsJson: item.optionGroups
+          ? (JSON.parse(
+              JSON.stringify(item.optionGroups)
+            ) as Prisma.InputJsonValue)
+          : undefined,
+      })),
+    });
+    return;
+  }
 
   const byName = new Map(fresh.map((item) => [item.name, item]));
   const cached = await prisma.menuItem.findMany({
@@ -62,14 +86,13 @@ export async function GET(
       orderBy: [{ category: "asc" }, { name: "asc" }],
     });
 
-    if (
-      menuItems.length > 0 &&
-      !menuItems.some((item) => item.description) &&
-      !backfillAttempted.has(id)
-    ) {
+    const needsBackfill =
+      menuItems.length === 0 || !menuItems.some((item) => item.description);
+
+    if (needsBackfill && !backfillAttempted.has(id)) {
       backfillAttempted.add(id);
       try {
-        await backfillDescriptions(id);
+        await backfillMenu(id);
         menuItems = await prisma.menuItem.findMany({
           where: { sessionId: id },
           orderBy: [{ category: "asc" }, { name: "asc" }],
