@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
-import { parseSlug, fetchMenu } from "@/lib/yandex-eda";
+import { parseSlug, fetchMenu, fetchPlaceInfo } from "@/lib/yandex-eda";
 
 // When we last tried to (re)load a session's menu in this process. Menus cached
 // before ingredients parsing have no descriptions, and a menu can be missing
@@ -58,16 +58,19 @@ async function backfillMenu(sessionId: string): Promise<void> {
   const byName = new Map(fresh.map((item) => [item.name, item]));
   const cached = await prisma.menuItem.findMany({
     where: { sessionId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, categoryOrder: true },
   });
 
   await Promise.all(
     cached.map((row) => {
       const match = byName.get(row.name);
-      if (!match?.description && !match?.optionGroups) return null;
+      if (!match) return null;
+      const needsOrder = row.categoryOrder !== match.categoryOrder;
+      if (!match.description && !match.optionGroups && !needsOrder) return null;
       return prisma.menuItem.update({
         where: { id: row.id },
         data: {
+          ...(needsOrder ? { categoryOrder: match.categoryOrder } : {}),
           ...(match.description ? { description: match.description } : {}),
           ...(match.optionGroups
             ? {
@@ -80,6 +83,30 @@ async function backfillMenu(sessionId: string): Promise<void> {
       });
     })
   );
+}
+
+/** Fill in the branch name/address for orders created before we stored them. */
+async function backfillPlaceInfo(sessionId: string): Promise<void> {
+  const session = await prisma.orderSession.findUnique({
+    where: { id: sessionId },
+    select: { url: true, placeSlug: true, placeName: true },
+  });
+  if (!session || session.placeName) return;
+
+  const slug = session.placeSlug || parseSlug(session.url);
+  if (!slug) return;
+
+  const info = await fetchPlaceInfo(slug);
+  if (!info) return;
+
+  await prisma.orderSession.update({
+    where: { id: sessionId },
+    data: {
+      placeSlug: slug,
+      placeName: info.name,
+      placeAddress: info.address || null,
+    },
+  });
 }
 
 // GET /api/orders/[id]/menu - Get cached menu items grouped by category
@@ -96,11 +123,14 @@ export async function GET(
     });
 
     const needsBackfill =
-      menuItems.length === 0 || !menuItems.some((item) => item.description);
+      menuItems.length === 0 ||
+      !menuItems.some((item) => item.description) ||
+      menuItems.every((item) => item.categoryOrder === 0);
 
     if (needsBackfill && shouldTryBackfill(id)) {
       lastBackfillAt.set(id, Date.now());
       try {
+        await backfillPlaceInfo(id);
         await backfillMenu(id);
         menuItems = await prisma.menuItem.findMany({
           where: { sessionId: id },
