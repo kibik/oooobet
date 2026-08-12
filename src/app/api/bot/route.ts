@@ -7,6 +7,7 @@ import { Prisma } from "@prisma/client";
 import {
   parseSlug,
   fetchMenu,
+  fetchPlaceInfo,
   isBrandLink,
   findBrandPlaces,
   type BrandPlace,
@@ -324,9 +325,9 @@ async function handleEdaLink(
 }
 
 /** How many dishes a branch publishes (0 when it has no usable menu). */
-async function countMenu(slug: string): Promise<number> {
+async function countMenu(slug: string, sourceUrl?: string): Promise<number> {
   try {
-    return (await fetchMenu(slug)).length;
+    return (await fetchMenu(slug, 1, true, sourceUrl)).length;
   } catch {
     return 0;
   }
@@ -335,9 +336,10 @@ async function countMenu(slug: string): Promise<number> {
 /** Store a freshly parsed menu for a session, replacing whatever was there. */
 async function storeMenu(
   sessionId: string,
-  slug: string
+  slug: string,
+  sourceUrl?: string
 ): Promise<number> {
-  const menuItems = await fetchMenu(slug);
+  const menuItems = await fetchMenu(slug, 1, true, sourceUrl);
   if (menuItems.length === 0) return 0;
 
   await prisma.menuItem.deleteMany({ where: { sessionId } });
@@ -345,6 +347,7 @@ async function storeMenu(
     data: menuItems.map((item) => ({
       sessionId,
       category: item.category,
+      categoryOrder: item.categoryOrder,
       name: item.name,
       price: item.price,
       description: item.description,
@@ -369,11 +372,18 @@ function orderKeyboard(
   orderUrl: string,
   sessionId: string,
   places: BrandPlace[],
-  currentSlug: string | null
+  currentSlug: string | null,
+  menuMissing: boolean = false
 ) {
   const rows: InlineKeyboardButton[][] = [
     [{ text: "Погнали заказывать", url: orderUrl }],
   ];
+
+  if (menuMissing) {
+    rows.push([
+      { text: "🔄 Загрузить меню ещё раз", callback_data: `menu:${sessionId}` },
+    ]);
+  }
 
   if (places.length > 1) {
     places.slice(0, 6).forEach((place, i) => {
@@ -416,7 +426,7 @@ async function createOrder(
   let preparsedMenu = 0;
   let preparsedFor: string | null = null;
   for (const place of places.slice(0, 4)) {
-    const count = await countMenu(place.slug);
+    const count = await countMenu(place.slug, restaurantUrl);
     if (count > 0) {
       chosen = place;
       preparsedMenu = count;
@@ -426,13 +436,22 @@ async function createOrder(
   }
   const menuSlug = chosen?.slug || slug;
 
+  // Direct branch links carry no name — look it up so the order shows a
+  // readable restaurant name and address instead of a slug.
+  let info = chosen
+    ? { name: chosen.name, address: chosen.address }
+    : null;
+  if (!info && menuSlug) {
+    info = await fetchPlaceInfo(menuSlug);
+  }
+
   const session = await prisma.orderSession.create({
     data: {
       url: restaurantUrl,
       adminId: BigInt(tgUser.id),
       placeSlug: menuSlug,
-      placeName: chosen?.name || null,
-      placeAddress: chosen?.address || null,
+      placeName: info?.name || null,
+      placeAddress: info?.address || null,
       placeOptions:
         places.length > 1
           ? (JSON.parse(JSON.stringify(places)) as Prisma.InputJsonValue)
@@ -443,7 +462,7 @@ async function createOrder(
   let menuCount = 0;
   if (menuSlug) {
     try {
-      menuCount = await storeMenu(session.id, menuSlug);
+      menuCount = await storeMenu(session.id, menuSlug, restaurantUrl);
     } catch (err) {
       console.error("Failed to parse menu for slug:", menuSlug, err);
     }
@@ -455,7 +474,7 @@ async function createOrder(
   const orderUrl = `${baseUrl}/order/${session.id}`;
 
   const displayName =
-    chosen?.name ||
+    info?.name ||
     slug ||
     (() => {
       try {
@@ -479,9 +498,9 @@ async function createOrder(
 
   const branchLine =
     places.length > 1
-      ? `\n\nФилиал: <b>${placeLabel(places[0])}</b>. У этого ресторана ${places.length} точки с разными меню и ценами — если нужна другая, выбери ниже.`
-      : chosen?.address
-        ? `\n\nФилиал: <b>${placeLabel(chosen)}</b>`
+      ? `\n\nФилиал: <b>${placeLabel(chosen || places[0])}</b>. У этого ресторана ${places.length} точки с разными меню и ценами — если нужна другая, выбери ниже.`
+      : info?.address
+        ? `\n\nФилиал: <b>${info.address.replace(/^Москва,\s*/, "")}</b>`
         : "";
 
   await ctx.reply(
@@ -489,10 +508,71 @@ async function createOrder(
     {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
-      reply_markup: orderKeyboard(orderUrl, session.id, places, menuSlug),
+      reply_markup: orderKeyboard(
+        orderUrl,
+        session.id,
+        places,
+        menuSlug,
+        menuCount === 0
+      ),
     }
   );
 }
+
+// "Load the menu again" button for when Yandex was unreachable
+bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
+  const sessionId = ctx.match[1];
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+
+  try {
+    const session = await prisma.orderSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, url: true, placeSlug: true, placeOptions: true },
+    });
+    if (!session) {
+      await ctx.answerCallbackQuery({ text: "Заказ не найден 🤷" });
+      return;
+    }
+
+    const slug = session.placeSlug || parseSlug(session.url);
+    if (!slug) {
+      await ctx.answerCallbackQuery({ text: "Не разобрал ссылку на ресторан" });
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: "Пробую загрузить меню…" });
+    const menuCount = await storeMenu(sessionId, slug, session.url);
+
+    if (menuCount === 0) {
+      await ctx.answerCallbackQuery({
+        text: "У этого ресторана меню не публикуется — добавьте блюда вручную",
+      });
+      return;
+    }
+
+    const places = (session.placeOptions as BrandPlace[] | null) || [];
+    try {
+      await ctx.editMessageText(
+        `[${pickRandom(OBED_PHRASES)}]\n\nЗаказываем из <a href="${session.url}">ресторана</a>, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор`,
+        {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+          reply_markup: orderKeyboard(
+            `${baseUrl}/order/${sessionId}`,
+            sessionId,
+            places,
+            slug
+          ),
+        }
+      );
+    } catch {
+      /* too old to edit — the menu is loaded anyway */
+    }
+  } catch (err) {
+    console.error("menu reload callback error:", err);
+    await ctx.answerCallbackQuery({ text: "Что-то пошло не так" });
+  }
+});
 
 // Branch picker on the order message
 bot.callbackQuery(/^place:([^:]+):(\d+)$/, async (ctx) => {
@@ -540,7 +620,7 @@ bot.callbackQuery(/^place:([^:]+):(\d+)$/, async (ctx) => {
       return;
     }
 
-    const menuCount = await storeMenu(sessionId, place.slug);
+    const menuCount = await storeMenu(sessionId, place.slug, session.url);
     if (menuCount === 0) {
       await ctx.answerCallbackQuery({
         text: "У этого филиала не удалось загрузить меню",

@@ -3,9 +3,17 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { parseSlug, fetchMenu } from "@/lib/yandex-eda";
 
-// Sessions whose menu we already tried to enrich in this process — menus cached
-// before ingredients parsing existed have no descriptions, so we refetch once.
-const backfillAttempted = new Set<string>();
+// When we last tried to (re)load a session's menu in this process. Menus cached
+// before ingredients parsing have no descriptions, and a menu can be missing
+// entirely if Yandex was unreachable when the order was created — so retry, but
+// no more often than this to avoid hammering the API on every page poll.
+const lastBackfillAt = new Map<string, number>();
+const BACKFILL_COOLDOWN_MS = 60_000;
+
+function shouldTryBackfill(sessionId: string): boolean {
+  const last = lastBackfillAt.get(sessionId);
+  return last === undefined || Date.now() - last > BACKFILL_COOLDOWN_MS;
+}
 
 /**
  * Refetch the menu from Yandex Eda for a session whose cached menu is empty
@@ -15,12 +23,12 @@ const backfillAttempted = new Set<string>();
 async function backfillMenu(sessionId: string): Promise<void> {
   const session = await prisma.orderSession.findUnique({
     where: { id: sessionId },
-    select: { url: true },
+    select: { url: true, placeSlug: true },
   });
-  const slug = session?.url ? parseSlug(session.url) : null;
+  const slug = session?.placeSlug || (session?.url ? parseSlug(session.url) : null);
   if (!slug) return;
 
-  const fresh = await fetchMenu(slug);
+  const fresh = await fetchMenu(slug, 1, true, session?.url);
   if (fresh.length === 0) return;
 
   const cachedCount = await prisma.menuItem.count({ where: { sessionId } });
@@ -31,6 +39,7 @@ async function backfillMenu(sessionId: string): Promise<void> {
       data: fresh.map((item) => ({
         sessionId,
         category: item.category,
+        categoryOrder: item.categoryOrder,
         name: item.name,
         price: item.price,
         description: item.description,
@@ -83,19 +92,19 @@ export async function GET(
 
     let menuItems = await prisma.menuItem.findMany({
       where: { sessionId: id },
-      orderBy: [{ category: "asc" }, { name: "asc" }],
+      orderBy: [{ categoryOrder: "asc" }, { category: "asc" }, { name: "asc" }],
     });
 
     const needsBackfill =
       menuItems.length === 0 || !menuItems.some((item) => item.description);
 
-    if (needsBackfill && !backfillAttempted.has(id)) {
-      backfillAttempted.add(id);
+    if (needsBackfill && shouldTryBackfill(id)) {
+      lastBackfillAt.set(id, Date.now());
       try {
         await backfillMenu(id);
         menuItems = await prisma.menuItem.findMany({
           where: { sessionId: id },
-          orderBy: [{ category: "asc" }, { name: "asc" }],
+          orderBy: [{ categoryOrder: "asc" }, { category: "asc" }, { name: "asc" }],
         });
       } catch (err) {
         console.error("Menu backfill failed for session", id, err);

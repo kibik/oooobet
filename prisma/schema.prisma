@@ -47,6 +47,7 @@ model MenuItem {
   sessionId   String
   session     OrderSession @relation(fields: [sessionId], references: [id])
   category    String
+  categoryOrder Int      @default(0) // Yandex's own category order
   name        String
   price       Int
   description String?

@@ -18,6 +18,7 @@ export interface MenuOptionGroup {
 
 export interface ParsedMenuItem {
   category: string;
+  categoryOrder: number; // keep Yandex's own category order, not alphabetical
   name: string;
   price: number;
   description: string | null;
@@ -148,6 +149,16 @@ const CITY_GRIDS: Record<
   sochi: { centre: [43.5855, 39.7231], lat: [43.55, 43.65], lon: [39.7, 39.78] },
 };
 
+/** Centre of the city mentioned in the link, for city-aware brand resolution. */
+export function cityCentreFromUrl(
+  url: string
+): { lat: number; lon: number } | null {
+  const city = cityFromUrl(url);
+  const grid = city ? CITY_GRIDS[city] : undefined;
+  if (!grid) return null;
+  return { lat: grid.centre[0], lon: grid.centre[1] };
+}
+
 function cityFromUrl(url: string): string | null {
   try {
     const m = new URL(url).pathname.match(/^\/([a-z-]+)\/r\//);
@@ -165,6 +176,37 @@ export interface BrandPlace {
   lon?: number;
 }
 
+/**
+ * Yandex addresses arrive noisy and sometimes self-repeating, e.g.
+ * "Красногорск, Российская Федерация, Москва, Красногорск, Россия, Московская
+ * область, Красногорск, Международная улица, 12". Keep the last meaningful
+ * parts (street + building), prefixed by the town when it isn't the region's
+ * capital, and drop duplicates.
+ */
+export function normalizeAddress(raw: string | undefined): string {
+  if (!raw) return "";
+
+  const noise = /^(росси[яи]|российская федерация|[а-яё\s-]*область|[а-яё\s-]*край|г\.?)$/i;
+  const seen = new Set<string>();
+  const parts: string[] = [];
+
+  for (const chunk of raw.split(",")) {
+    const part = chunk.trim();
+    if (!part || noise.test(part)) continue;
+    const key = part.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push(part);
+  }
+
+  // Drop the regional capital (the order is placed there anyway) but keep a
+  // suburb's name — "Красногорск, Международная улица, 12" must stay distinct.
+  const capital = /^(москва|санкт-петербург|московская|ленинградская)$/i;
+  const kept = parts.filter((part) => !capital.test(part));
+
+  return (kept.length > 0 ? kept : parts).slice(-4).join(", ");
+}
+
 function placeFromPayload(data: BrandPlaceResponse): BrandPlace | null {
   const found = data?.payload?.foundPlace;
   const slug = found?.place?.slug;
@@ -173,9 +215,7 @@ function placeFromPayload(data: BrandPlaceResponse): BrandPlace | null {
   return {
     slug,
     name: found?.place?.name || slug,
-    address:
-      found?.place?.address?.short?.replace(/^Российская Федерация,\s*/, "") ||
-      "",
+    address: normalizeAddress(found?.place?.address?.short),
     lat: loc?.latitude,
     lon: loc?.longitude,
   };
@@ -226,19 +266,20 @@ export async function findBrandPlaces(
   const results = await Promise.all(
     points.map(async ([lat, lon]) => {
       const probe = `https://eda.yandex.ru/eats/v1/eats-catalog/v2/brand/place?brand_slug=${encodeURIComponent(brandSlug)}&latitude=${lat}&longitude=${lon}&region_id=${regionId}`;
-      try {
-        const res = await fetch(probe, { headers: API_HEADERS });
-        if (!res.ok) return null;
-        return placeFromPayload(await res.json());
-      } catch {
-        return null;
-      }
+      const data = await apiGet<BrandPlaceResponse>(probe, "brand probe");
+      return data ? placeFromPayload(data) : null;
     })
   );
 
+  // The same shop can answer under two slugs — de-duplicate by address too
   const bySlug = new Map<string, BrandPlace>();
+  const seenAddresses = new Set<string>();
   for (const place of results) {
-    if (place && !bySlug.has(place.slug)) bySlug.set(place.slug, place);
+    if (!place || bySlug.has(place.slug)) continue;
+    const addressKey = place.address.toLowerCase();
+    if (addressKey && seenAddresses.has(addressKey)) continue;
+    if (addressKey) seenAddresses.add(addressKey);
+    bySlug.set(place.slug, place);
   }
 
   // Nearest to the city centre first — that is the most likely intended branch
@@ -302,9 +343,75 @@ const API_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   Accept: "application/json",
+  "Accept-Language": "ru-RU,ru;q=0.9",
   // Without this the API omits the `descriptions` blocks (ingredients)
   "x-platform": "desktop_web",
 };
+
+const REQUEST_TIMEOUT_MS = 8000;
+const MAX_ATTEMPTS = 3;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * GET JSON from the Yandex Eda API with a timeout and retries.
+ *
+ * Transient failures (network errors, timeouts, 429, 5xx) are retried with
+ * backoff — a single hiccup used to surface as "меню не удалось загрузить".
+ * A 404 is returned as null immediately: it is an answer, not a failure.
+ */
+async function apiGet<T>(url: string, label: string): Promise<T | null> {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        headers: API_HEADERS,
+        signal: controller.signal,
+      });
+
+      if (res.ok) return (await res.json()) as T;
+
+      if (res.status === 404) return null;
+
+      const retryable = res.status === 429 || res.status >= 500;
+      console.error(
+        `Yandex Eda ${label}: HTTP ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS})`
+      );
+      if (!retryable || attempt === MAX_ATTEMPTS) return null;
+    } catch (err) {
+      const reason = err instanceof Error ? err.name : String(err);
+      console.error(
+        `Yandex Eda ${label}: ${reason} (attempt ${attempt}/${MAX_ATTEMPTS})`
+      );
+      if (attempt === MAX_ATTEMPTS) return null;
+    } finally {
+      clearTimeout(timer);
+    }
+    await sleep(300 * 2 ** (attempt - 1)); // 300ms, 600ms
+  }
+  return null;
+}
+
+export interface PlaceInfo {
+  name: string;
+  address: string;
+}
+
+/**
+ * Name and address of a branch, so the order shows "Curry индийская кухня —
+ * улица Арбат, 32" instead of a bare slug.
+ */
+export async function fetchPlaceInfo(slug: string): Promise<PlaceInfo | null> {
+  const url = `https://eda.yandex.ru/api/v2/catalog/${encodeURIComponent(slug)}?latitude=55.7558&longitude=37.6173&shippingType=delivery`;
+  const data = await apiGet<BrandPlaceResponse>(url, `catalog ${slug}`);
+  const place = data?.payload?.foundPlace?.place;
+  if (!place?.name) return null;
+  return {
+    name: place.name,
+    address: normalizeAddress(place.address?.short),
+  };
+}
 
 interface BrandPlaceResponse {
   payload?: {
@@ -328,81 +435,87 @@ interface BrandPlaceResponse {
  */
 export async function resolvePlaceSlug(
   brandSlug: string,
-  regionId: number = 1
+  regionId: number = 1,
+  near?: { lat: number; lon: number } | null
 ): Promise<string | null> {
-  const url = `https://eda.yandex.ru/eats/v1/eats-catalog/v2/brand/place?brand_slug=${encodeURIComponent(brandSlug)}&region_id=${regionId}`;
-
-  try {
-    const res = await fetch(url, { headers: API_HEADERS });
-    if (!res.ok) return null;
-    const data: BrandPlaceResponse = await res.json();
-    const slug = data?.payload?.foundPlace?.place?.slug;
-    return slug && slug !== brandSlug ? slug : null;
-  } catch (err) {
-    console.error(`Failed to resolve brand slug "${brandSlug}":`, err);
-    return null;
-  }
+  const coords = near ? `&latitude=${near.lat}&longitude=${near.lon}` : "";
+  const url = `https://eda.yandex.ru/eats/v1/eats-catalog/v2/brand/place?brand_slug=${encodeURIComponent(brandSlug)}${coords}&region_id=${regionId}`;
+  const data = await apiGet<BrandPlaceResponse>(url, `brand ${brandSlug}`);
+  const slug = data?.payload?.foundPlace?.place?.slug;
+  return slug && slug !== brandSlug ? slug : null;
 }
 
 /**
- * Fetch menu from Yandex Eda API and return parsed items.
+ * Fetch a branch menu and return parsed items.
+ *
+ * Resilient by design: the HTTP layer retries transient failures, and a slug
+ * that turns out to be a brand (no menu of its own) is resolved to a branch and
+ * retried once. An empty result means "this place publishes no menu", not "the
+ * request failed" — the caller can safely fall back to manual entry.
  */
 export async function fetchMenu(
   slug: string,
   regionId: number = 1,
-  allowBrandResolve: boolean = true
+  allowBrandResolve: boolean = true,
+  /** The original restaurant link, so a brand resolves within its own city. */
+  sourceUrl?: string
 ): Promise<ParsedMenuItem[]> {
   const url = `https://eda.yandex.ru/api/v2/menu/retrieve/${encodeURIComponent(slug)}?regionId=${regionId}&autoTranslate=false`;
 
-  // A brand slug (from /{city}/r/{brand} links) has no menu of its own —
-  // resolve it to a branch and retry once.
   const retryAsBrand = async (): Promise<ParsedMenuItem[]> => {
     if (!allowBrandResolve) return [];
-    const placeSlug = await resolvePlaceSlug(slug, regionId);
+    const near = sourceUrl ? cityCentreFromUrl(sourceUrl) : null;
+    const placeSlug = await resolvePlaceSlug(slug, regionId, near);
     if (!placeSlug) return [];
     console.log(`Resolved brand slug "${slug}" to place "${placeSlug}"`);
-    return fetchMenu(placeSlug, regionId, false);
+    return fetchMenu(placeSlug, regionId, false, sourceUrl);
   };
 
-  const res = await fetch(url, { headers: API_HEADERS });
-
-  if (!res.ok) {
-    const viaBrand = await retryAsBrand();
-    if (viaBrand.length > 0) return viaBrand;
-    console.error(
-      `Yandex Eda API returned ${res.status} for slug "${slug}"`
-    );
-    return [];
-  }
-
-  const data: YandexEdaMenuResponse = await res.json();
-
-  if (!data?.payload?.categories) {
-    return retryAsBrand();
-  }
+  const data = await apiGet<YandexEdaMenuResponse>(url, `menu ${slug}`);
+  if (!data?.payload?.categories) return retryAsBrand();
 
   const items: ParsedMenuItem[] = [];
 
-  for (const category of data.payload.categories) {
-    if (!category.items) continue;
+  data.payload.categories.forEach((category, categoryOrder) => {
+    if (!category.items?.length) return;
 
     for (const item of category.items) {
-      // Skip unavailable items
+      // Skip unavailable items and anything without a usable name/price
       if (item.available === false) continue;
+      if (!item.name?.trim()) continue;
+      const price = Math.round(Number(item.price));
+      if (!Number.isFinite(price) || price <= 0) continue;
 
       items.push({
-        category: category.name,
-        name: item.name,
-        price: Math.round(item.price),
+        category: category.name?.trim() || "Меню",
+        categoryOrder,
+        name: item.name.trim(),
+        price,
         description:
           item.description?.trim() || parseIngredients(item.descriptions),
-        weight: item.weight || null,
+        weight: item.weight?.trim() || null,
         imageUrl: resolveImageUrl(item.picture),
         optionGroups: parseOptionGroups(item.optionsGroups),
       });
     }
-  }
+  });
 
   // An empty menu for a brand slug means the same thing as a 404
-  return items.length > 0 ? items : retryAsBrand();
+  if (items.length === 0) return retryAsBrand();
+
+  // A brand slug also answers 200 — with a stripped-down menu: no photos, no
+  // ingredients and often different prices than the branch actually charges.
+  // Detect that shape and prefer the branch's real menu.
+  if (allowBrandResolve && !items.some((item) => item.imageUrl)) {
+    const viaBrand = await retryAsBrand();
+    if (viaBrand.length > items.length) {
+      console.log(
+        `Brand slug "${slug}" served a reduced menu (${items.length} items); using the branch menu (${viaBrand.length})`
+      );
+      return viaBrand;
+    }
+  }
+
+  return items;
 }
+
