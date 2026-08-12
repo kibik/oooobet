@@ -133,16 +133,19 @@ export function isBrandLink(url: string): boolean {
   }
 }
 
-/** City name in the URL → a coordinate grid to probe for branches. */
-const CITY_GRIDS: Record<string, { lat: [number, number]; lon: [number, number] }> = {
-  moscow: { lat: [55.58, 55.89], lon: [37.4, 37.83] },
-  spb: { lat: [59.85, 60.02], lon: [30.2, 30.5] },
-  "saint-petersburg": { lat: [59.85, 60.02], lon: [30.2, 30.5] },
-  ekaterinburg: { lat: [56.75, 56.9], lon: [60.5, 60.7] },
-  kazan: { lat: [55.72, 55.85], lon: [49.05, 49.25] },
-  novosibirsk: { lat: [54.96, 55.1], lon: [82.85, 83.05] },
-  "nizhny-novgorod": { lat: [56.23, 56.35], lon: [43.85, 44.05] },
-  sochi: { lat: [43.55, 43.65], lon: [39.7, 39.78] },
+/** City name in the URL → centre + bounds of the grid probed for branches. */
+const CITY_GRIDS: Record<
+  string,
+  { centre: [number, number]; lat: [number, number]; lon: [number, number] }
+> = {
+  moscow: { centre: [55.7558, 37.6173], lat: [55.58, 55.89], lon: [37.4, 37.83] },
+  spb: { centre: [59.9343, 30.3351], lat: [59.85, 60.02], lon: [30.2, 30.5] },
+  "saint-petersburg": { centre: [59.9343, 30.3351], lat: [59.85, 60.02], lon: [30.2, 30.5] },
+  ekaterinburg: { centre: [56.8389, 60.6057], lat: [56.75, 56.9], lon: [60.5, 60.7] },
+  kazan: { centre: [55.7963, 49.1088], lat: [55.72, 55.85], lon: [49.05, 49.25] },
+  novosibirsk: { centre: [55.0084, 82.9357], lat: [54.96, 55.1], lon: [82.85, 83.05] },
+  "nizhny-novgorod": { centre: [56.3269, 44.0059], lat: [56.23, 56.35], lon: [43.85, 44.05] },
+  sochi: { centre: [43.5855, 39.7231], lat: [43.55, 43.65], lon: [39.7, 39.78] },
 };
 
 function cityFromUrl(url: string): string | null {
@@ -158,18 +161,23 @@ export interface BrandPlace {
   slug: string;
   name: string;
   address: string;
+  lat?: number;
+  lon?: number;
 }
 
 function placeFromPayload(data: BrandPlaceResponse): BrandPlace | null {
   const found = data?.payload?.foundPlace;
   const slug = found?.place?.slug;
   if (!slug) return null;
+  const loc = found?.place?.address?.location;
   return {
     slug,
     name: found?.place?.name || slug,
     address:
       found?.place?.address?.short?.replace(/^Российская Федерация,\s*/, "") ||
       "",
+    lat: loc?.latitude,
+    lon: loc?.longitude,
   };
 }
 
@@ -186,8 +194,26 @@ export async function findBrandPlaces(
   const city = cityFromUrl(url);
   const grid = (city && CITY_GRIDS[city]) || CITY_GRIDS.moscow;
 
-  const points: Array<[number, number]> = [];
-  const steps = 4; // 4x4 probes across the city bounds
+  const [cLat, cLon] = grid.centre;
+
+  // Centre first, then a ring close to it (where most branches sit), then a
+  // coarse grid over the whole city.
+  const points: Array<[number, number]> = [[cLat, cLon]];
+  for (const d of [0.03, 0.07]) {
+    for (const [dy, dx] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+      [1, 1],
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+    ]) {
+      points.push([cLat + dy * d, cLon + dx * d * 1.7]);
+    }
+  }
+  const steps = 4; // coarse grid across the city bounds
   for (let i = 0; i < steps; i++) {
     for (let j = 0; j < steps; j++) {
       points.push([
@@ -214,7 +240,13 @@ export async function findBrandPlaces(
   for (const place of results) {
     if (place && !bySlug.has(place.slug)) bySlug.set(place.slug, place);
   }
-  return [...bySlug.values()];
+
+  // Nearest to the city centre first — that is the most likely intended branch
+  return [...bySlug.values()].sort((a, b) => {
+    const da = Math.hypot((a.lat ?? 99) - cLat, ((a.lon ?? 99) - cLon) / 1.7);
+    const db = Math.hypot((b.lat ?? 99) - cLat, ((b.lon ?? 99) - cLon) / 1.7);
+    return da - db;
+  });
 }
 
 /**
@@ -280,7 +312,11 @@ interface BrandPlaceResponse {
       place?: {
         slug?: string;
         name?: string;
-        address?: { short?: string; city?: string };
+        address?: {
+          short?: string;
+          city?: string;
+          location?: { latitude?: number; longitude?: number };
+        };
       };
     };
   };

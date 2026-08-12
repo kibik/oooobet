@@ -323,6 +323,15 @@ async function handleEdaLink(
   await createOrder(ctx, tgUser, restaurantUrl);
 }
 
+/** How many dishes a branch publishes (0 when it has no usable menu). */
+async function countMenu(slug: string): Promise<number> {
+  try {
+    return (await fetchMenu(slug)).length;
+  } catch {
+    return 0;
+  }
+}
+
 /** Store a freshly parsed menu for a session, replacing whatever was there. */
 async function storeMenu(
   sessionId: string,
@@ -401,7 +410,20 @@ async function createOrder(
     }
   }
 
-  const chosen = places[0] || null;
+  // Prefer the nearest branch whose menu actually loads — the closest one may
+  // be closed or have no menu published.
+  let chosen = places[0] || null;
+  let preparsedMenu = 0;
+  let preparsedFor: string | null = null;
+  for (const place of places.slice(0, 4)) {
+    const count = await countMenu(place.slug);
+    if (count > 0) {
+      chosen = place;
+      preparsedMenu = count;
+      preparsedFor = place.slug;
+      break;
+    }
+  }
   const menuSlug = chosen?.slug || slug;
 
   const session = await prisma.orderSession.create({
@@ -425,6 +447,9 @@ async function createOrder(
     } catch (err) {
       console.error("Failed to parse menu for slug:", menuSlug, err);
     }
+  }
+  if (menuCount === 0 && preparsedFor === menuSlug) {
+    menuCount = preparsedMenu; // menu existed a moment ago; keep the count honest
   }
 
   const orderUrl = `${baseUrl}/order/${session.id}`;
