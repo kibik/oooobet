@@ -24,6 +24,12 @@ model User {
 model OrderSession {
   id              String      @id @default(cuid())
   url             String
+  // Which branch of the restaurant the menu came from. Brand links
+  // (/{city}/r/{brand}) have several branches with different menus & prices.
+  placeSlug       String?
+  placeName       String?
+  placeAddress    String?
+  placeOptions    Json? // other branches to choose from: [{slug,name,address}]
   status          String      @default("OPEN")
   deliveryFee     Int         @default(0)
   serviceFee      Int         @default(0)

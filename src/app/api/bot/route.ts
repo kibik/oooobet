@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { webhookCallback } from "grammy";
+import type { InlineKeyboardButton } from "grammy/types";
 import { getBot } from "@/lib/bot";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
-import { parseSlug, fetchMenu } from "@/lib/yandex-eda";
+import {
+  parseSlug,
+  fetchMenu,
+  isBrandLink,
+  findBrandPlaces,
+  type BrandPlace,
+} from "@/lib/yandex-eda";
 
 const bot = getBot();
 
@@ -316,6 +323,64 @@ async function handleEdaLink(
   await createOrder(ctx, tgUser, restaurantUrl);
 }
 
+/** Store a freshly parsed menu for a session, replacing whatever was there. */
+async function storeMenu(
+  sessionId: string,
+  slug: string
+): Promise<number> {
+  const menuItems = await fetchMenu(slug);
+  if (menuItems.length === 0) return 0;
+
+  await prisma.menuItem.deleteMany({ where: { sessionId } });
+  await prisma.menuItem.createMany({
+    data: menuItems.map((item) => ({
+      sessionId,
+      category: item.category,
+      name: item.name,
+      price: item.price,
+      description: item.description,
+      weight: item.weight,
+      imageUrl: item.imageUrl,
+      optionsJson: item.optionGroups
+        ? (JSON.parse(JSON.stringify(item.optionGroups)) as Prisma.InputJsonValue)
+        : undefined,
+    })),
+  });
+  return menuItems.length;
+}
+
+function placeLabel(place: BrandPlace): string {
+  return place.address
+    ? place.address.replace(/^Москва,\s*/, "")
+    : place.name;
+}
+
+/** Keyboard: order link + one button per alternative branch. */
+function orderKeyboard(
+  orderUrl: string,
+  sessionId: string,
+  places: BrandPlace[],
+  currentSlug: string | null
+) {
+  const rows: InlineKeyboardButton[][] = [
+    [{ text: "Погнали заказывать", url: orderUrl }],
+  ];
+
+  if (places.length > 1) {
+    places.slice(0, 6).forEach((place, i) => {
+      const chosen = place.slug === currentSlug;
+      rows.push([
+        {
+          text: `${chosen ? "✅" : "📍"} ${placeLabel(place)}`,
+          callback_data: `place:${sessionId}:${i}`,
+        },
+      ]);
+    });
+  }
+
+  return { inline_keyboard: rows };
+}
+
 // Helper to create order and send link
 async function createOrder(
   ctx: { reply: typeof bot.api.sendMessage extends (chatId: infer _C, ...args: infer A) => infer R ? (...args: A) => R : never },
@@ -323,60 +388,63 @@ async function createOrder(
   restaurantUrl: string
 ) {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+  const slug = parseSlug(restaurantUrl);
+
+  // Brand links (/{city}/r/{brand}) can cover several branches with different
+  // menus — collect them so the user can pick the right one.
+  let places: BrandPlace[] = [];
+  if (slug && isBrandLink(restaurantUrl)) {
+    try {
+      places = await findBrandPlaces(restaurantUrl, slug);
+    } catch (err) {
+      console.error("Failed to list brand places for:", slug, err);
+    }
+  }
+
+  const chosen = places[0] || null;
+  const menuSlug = chosen?.slug || slug;
 
   const session = await prisma.orderSession.create({
     data: {
       url: restaurantUrl,
       adminId: BigInt(tgUser.id),
+      placeSlug: menuSlug,
+      placeName: chosen?.name || null,
+      placeAddress: chosen?.address || null,
+      placeOptions:
+        places.length > 1
+          ? (JSON.parse(JSON.stringify(places)) as Prisma.InputJsonValue)
+          : undefined,
     },
   });
 
-  // Try to parse menu from Yandex Eda
   let menuCount = 0;
-  const slug = parseSlug(restaurantUrl);
-  if (slug) {
+  if (menuSlug) {
     try {
-      const menuItems = await fetchMenu(slug);
-      if (menuItems.length > 0) {
-        await prisma.menuItem.createMany({
-          data: menuItems.map((item) => ({
-            sessionId: session.id,
-            category: item.category,
-            name: item.name,
-            price: item.price,
-            description: item.description,
-            weight: item.weight,
-            imageUrl: item.imageUrl,
-            optionsJson: item.optionGroups
-              ? (JSON.parse(JSON.stringify(item.optionGroups)) as Prisma.InputJsonValue)
-              : undefined,
-          })),
-        });
-        menuCount = menuItems.length;
-      }
+      menuCount = await storeMenu(session.id, menuSlug);
     } catch (err) {
-      console.error("Failed to parse menu for slug:", slug, err);
+      console.error("Failed to parse menu for slug:", menuSlug, err);
     }
   }
 
   const orderUrl = `${baseUrl}/order/${session.id}`;
 
-  // Extract slug for display
-  const displaySlug = slug || (() => {
-    try {
-      const parsed = new URL(restaurantUrl);
-      const ps = parsed.searchParams.get("placeSlug");
-      if (ps) return ps;
-      const m = parsed.pathname.match(/\/(?:restaurant|r)\/([^/?]+)/);
-      if (m) return m[1];
-      const cm = parsed.pathname.match(/\/[^/]+\/r\/([^/?]+)/);
-      if (cm) return cm[1];
-    } catch { /* ignore */ }
-    return null;
-  })();
+  const displayName =
+    chosen?.name ||
+    slug ||
+    (() => {
+      try {
+        const parsed = new URL(restaurantUrl);
+        const ps = parsed.searchParams.get("placeSlug");
+        if (ps) return ps;
+        const m = parsed.pathname.match(/\/(?:restaurant|r)\/([^/?]+)/);
+        if (m) return m[1];
+      } catch { /* ignore */ }
+      return null;
+    })();
 
-  const restaurantLine = displaySlug
-    ? `Заказываем из <a href="${restaurantUrl}">${displaySlug}</a>`
+  const restaurantLine = displayName
+    ? `Заказываем из <a href="${restaurantUrl}">${displayName}</a>`
     : `Заказываем из <a href="${restaurantUrl}">ресторана</a>`;
 
   const phrase = pickRandom(OBED_PHRASES);
@@ -384,17 +452,112 @@ async function createOrder(
     ? `${restaurantLine}, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор`
     : `${restaurantLine}\n\nМеню не удалось загрузить — позиции можно добавить вручную`;
 
+  const branchLine =
+    places.length > 1
+      ? `\n\nФилиал: <b>${placeLabel(places[0])}</b>. У этого ресторана ${places.length} точки с разными меню и ценами — если нужна другая, выбери ниже.`
+      : chosen?.address
+        ? `\n\nФилиал: <b>${placeLabel(chosen)}</b>`
+        : "";
+
   await ctx.reply(
-    `[${phrase}]\n\n${mainLine}`,
+    `[${phrase}]\n\n${mainLine}${branchLine}`,
     {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
-      reply_markup: {
-        inline_keyboard: [[{ text: "Погнали заказывать", url: orderUrl }]],
-      },
+      reply_markup: orderKeyboard(orderUrl, session.id, places, menuSlug),
     }
   );
 }
+
+// Branch picker on the order message
+bot.callbackQuery(/^place:([^:]+):(\d+)$/, async (ctx) => {
+  const sessionId = ctx.match[1];
+  const index = Number(ctx.match[2]);
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+
+  try {
+    const session = await prisma.orderSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        url: true,
+        adminId: true,
+        placeSlug: true,
+        placeOptions: true,
+        status: true,
+        _count: { select: { items: true } },
+      },
+    });
+
+    if (!session) {
+      await ctx.answerCallbackQuery({ text: "Заказ не найден 🤷" });
+      return;
+    }
+    if (session.adminId !== BigInt(ctx.from.id)) {
+      await ctx.answerCallbackQuery({
+        text: "Филиал меняет только тот, кто создал заказ",
+      });
+      return;
+    }
+    if (session.status !== "OPEN") {
+      await ctx.answerCallbackQuery({ text: "Сбор заказов уже завершён" });
+      return;
+    }
+
+    const places = (session.placeOptions as BrandPlace[] | null) || [];
+    const place = places[index];
+    if (!place) {
+      await ctx.answerCallbackQuery({ text: "Этот филиал больше недоступен" });
+      return;
+    }
+    if (place.slug === session.placeSlug) {
+      await ctx.answerCallbackQuery({ text: "Этот филиал уже выбран" });
+      return;
+    }
+
+    const menuCount = await storeMenu(sessionId, place.slug);
+    if (menuCount === 0) {
+      await ctx.answerCallbackQuery({
+        text: "У этого филиала не удалось загрузить меню",
+      });
+      return;
+    }
+
+    await prisma.orderSession.update({
+      where: { id: sessionId },
+      data: {
+        placeSlug: place.slug,
+        placeName: place.name,
+        placeAddress: place.address,
+      },
+    });
+
+    await ctx.answerCallbackQuery({ text: `Меню: ${placeLabel(place)}` });
+
+    const orderUrl = `${baseUrl}/order/${sessionId}`;
+    const warning =
+      session._count.items > 0
+        ? "\n\n⚠️ Блюда, добавленные раньше, остались с прежними ценами — проверьте их."
+        : "";
+
+    try {
+      await ctx.editMessageText(
+        `[${pickRandom(OBED_PHRASES)}]\n\nЗаказываем из <a href="${session.url}">${place.name}</a>, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор\n\nФилиал: <b>${placeLabel(place)}</b>${warning}`,
+        {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+          reply_markup: orderKeyboard(orderUrl, sessionId, places, place.slug),
+        }
+      );
+    } catch {
+      /* message too old to edit — the menu is switched anyway */
+    }
+  } catch (err) {
+    console.error("place callback error:", err);
+    await ctx.answerCallbackQuery({ text: "Что-то пошло не так" });
+  }
+});
+
 
 // "I paid" button on the payment message
 bot.callbackQuery(/^paid:(.+)$/, async (ctx) => {

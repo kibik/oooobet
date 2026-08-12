@@ -61,6 +61,8 @@ interface OrderItem {
 interface OrderSession {
   id: string;
   url: string;
+  placeName?: string | null;
+  placeAddress?: string | null;
   status: string;
   deliveryFee: number;
   serviceFee: number;
@@ -663,19 +665,25 @@ export default function OrderPage({
                 rel="noopener noreferrer"
                 className="text-blue-600 hover:text-blue-800 underline"
               >
-                {(() => {
-                  try {
-                    const parsed = new URL(session.url);
-                    const placeSlug = parsed.searchParams.get("placeSlug");
-                    if (placeSlug) return placeSlug;
-                    const m = parsed.pathname.match(/\/(?:restaurant|r)\/([^/?]+)/);
-                    if (m) return m[1];
-                    const cm = parsed.pathname.match(/\/[^/]+\/r\/([^/?]+)/);
-                    if (cm) return cm[1];
-                  } catch { /* ignore */ }
-                  return session.url;
-                })()}
+                {session.placeName ||
+                  (() => {
+                    try {
+                      const parsed = new URL(session.url);
+                      const placeSlug = parsed.searchParams.get("placeSlug");
+                      if (placeSlug) return placeSlug;
+                      const m = parsed.pathname.match(/\/(?:restaurant|r)\/([^/?]+)/);
+                      if (m) return m[1];
+                      const cm = parsed.pathname.match(/\/[^/]+\/r\/([^/?]+)/);
+                      if (cm) return cm[1];
+                    } catch { /* ignore */ }
+                    return session.url;
+                  })()}
               </a>
+              {session.placeAddress && (
+                <span className="block text-xs mt-0.5">
+                  {session.placeAddress.replace(/^Москва,\s*/, "")}
+                </span>
+              )}
             </p>
           </CardContent>
         </Card>

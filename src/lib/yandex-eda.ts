@@ -119,6 +119,105 @@ export function parseSlug(url: string): string | null {
 }
 
 /**
+ * True when the link points at a brand rather than a specific branch, i.e.
+ * /{city}/r/{brand} without ?placeSlug — several branches may match it, each
+ * with its own menu and prices.
+ */
+export function isBrandLink(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.get("placeSlug")) return false;
+    return !/\/restaurant\//.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/** City name in the URL → a coordinate grid to probe for branches. */
+const CITY_GRIDS: Record<string, { lat: [number, number]; lon: [number, number] }> = {
+  moscow: { lat: [55.58, 55.89], lon: [37.4, 37.83] },
+  spb: { lat: [59.85, 60.02], lon: [30.2, 30.5] },
+  "saint-petersburg": { lat: [59.85, 60.02], lon: [30.2, 30.5] },
+  ekaterinburg: { lat: [56.75, 56.9], lon: [60.5, 60.7] },
+  kazan: { lat: [55.72, 55.85], lon: [49.05, 49.25] },
+  novosibirsk: { lat: [54.96, 55.1], lon: [82.85, 83.05] },
+  "nizhny-novgorod": { lat: [56.23, 56.35], lon: [43.85, 44.05] },
+  sochi: { lat: [43.55, 43.65], lon: [39.7, 39.78] },
+};
+
+function cityFromUrl(url: string): string | null {
+  try {
+    const m = new URL(url).pathname.match(/^\/([a-z-]+)\/r\//);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface BrandPlace {
+  slug: string;
+  name: string;
+  address: string;
+}
+
+function placeFromPayload(data: BrandPlaceResponse): BrandPlace | null {
+  const found = data?.payload?.foundPlace;
+  const slug = found?.place?.slug;
+  if (!slug) return null;
+  return {
+    slug,
+    name: found?.place?.name || slug,
+    address:
+      found?.place?.address?.short?.replace(/^Российская Федерация,\s*/, "") ||
+      "",
+  };
+}
+
+/**
+ * Find the brand's branches by asking Yandex for the nearest place at points
+ * across the city — there is no public "list all branches" endpoint, so we
+ * probe a coarse grid and de-duplicate. Ordered nearest-to-centre first.
+ */
+export async function findBrandPlaces(
+  url: string,
+  brandSlug: string,
+  regionId: number = 1
+): Promise<BrandPlace[]> {
+  const city = cityFromUrl(url);
+  const grid = (city && CITY_GRIDS[city]) || CITY_GRIDS.moscow;
+
+  const points: Array<[number, number]> = [];
+  const steps = 4; // 4x4 probes across the city bounds
+  for (let i = 0; i < steps; i++) {
+    for (let j = 0; j < steps; j++) {
+      points.push([
+        grid.lat[0] + ((grid.lat[1] - grid.lat[0]) * i) / (steps - 1),
+        grid.lon[0] + ((grid.lon[1] - grid.lon[0]) * j) / (steps - 1),
+      ]);
+    }
+  }
+
+  const results = await Promise.all(
+    points.map(async ([lat, lon]) => {
+      const probe = `https://eda.yandex.ru/eats/v1/eats-catalog/v2/brand/place?brand_slug=${encodeURIComponent(brandSlug)}&latitude=${lat}&longitude=${lon}&region_id=${regionId}`;
+      try {
+        const res = await fetch(probe, { headers: API_HEADERS });
+        if (!res.ok) return null;
+        return placeFromPayload(await res.json());
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  const bySlug = new Map<string, BrandPlace>();
+  for (const place of results) {
+    if (place && !bySlug.has(place.slug)) bySlug.set(place.slug, place);
+  }
+  return [...bySlug.values()];
+}
+
+/**
  * Resolve image URL from Yandex Eda template URI.
  * Template: /images/{bucket}/{hash}-{w}x{h}.jpeg
  * We request 200x200 thumbnails.
@@ -177,7 +276,13 @@ const API_HEADERS = {
 
 interface BrandPlaceResponse {
   payload?: {
-    foundPlace?: { place?: { slug?: string } };
+    foundPlace?: {
+      place?: {
+        slug?: string;
+        name?: string;
+        address?: { short?: string; city?: string };
+      };
+    };
   };
 }
 
