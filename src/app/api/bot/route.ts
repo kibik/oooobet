@@ -372,15 +372,65 @@ function placeLabel(place: BrandPlace): string {
 }
 
 /** Keyboard: order link + one button per alternative branch. */
-const DEADLINE_CHOICES = [15, 30, 45, 60] as const;
+const MSK_OFFSET = "+03:00"; // Moscow has no DST
+
+/** Current wall clock in Moscow, as {date: "YYYY-MM-DD", minutes: since midnight}. */
+function moscowNow(): { date: string; minutes: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date());
+  const get = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? "00";
+  return {
+    date: `${get("year")}-${get("month")}-${get("day")}`,
+    minutes: Number(get("hour")) * 60 + Number(get("minute")),
+  };
+}
+
+/** The next few half-hour marks (11:30, 12:00, …), skipping one that's too close. */
+function nextTimeSlots(count: number = 4): string[] {
+  const { minutes } = moscowNow();
+  let slot = Math.ceil((minutes + 5) / 30) * 30; // at least 5 minutes away
+  const slots: string[] = [];
+  for (let i = 0; i < count; i++, slot += 30) {
+    const h = Math.floor(slot / 60) % 24;
+    const m = slot % 60;
+    slots.push(`${String(h).padStart(2, "0")}${String(m).padStart(2, "0")}`);
+  }
+  return slots;
+}
+
+function prettySlot(hhmm: string): string {
+  return `${hhmm.slice(0, 2)}:${hhmm.slice(2)}`;
+}
+
+/** "1230" → a Date today in Moscow (tomorrow if that time already passed). */
+function deadlineFromSlot(hhmm: string): Date {
+  const { date, minutes } = moscowNow();
+  const slotMinutes = Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(2));
+  const at = new Date(
+    `${date}T${prettySlot(hhmm)}:00${MSK_OFFSET}`
+  );
+  if (slotMinutes <= minutes) at.setDate(at.getDate() + 1);
+  return at;
+}
 
 function deadlineRows(sessionId: string): InlineKeyboardButton[][] {
-  return [
-    DEADLINE_CHOICES.map((minutes) => ({
-      text: `${minutes} мин`,
-      callback_data: `until:${sessionId}:${minutes}`,
-    })),
-  ];
+  const buttons: InlineKeyboardButton[] = nextTimeSlots().map((hhmm) => ({
+    text: prettySlot(hhmm),
+    callback_data: `until:${sessionId}:${hhmm}`,
+  }));
+  buttons.push({
+    text: "пофигу",
+    callback_data: `until:${sessionId}:none`,
+  });
+  return [buttons];
 }
 
 function formatDeadline(deadline: Date): string {
@@ -392,16 +442,14 @@ function formatDeadline(deadline: Date): string {
 }
 
 function orderKeyboard(
-  orderUrl: string,
   sessionId: string,
   places: BrandPlace[],
   currentSlug: string | null,
   menuMissing: boolean = false,
   askDeadline: boolean = false
 ) {
-  const rows: InlineKeyboardButton[][] = [
-    [{ text: "Погнали заказывать", url: orderUrl }],
-  ];
+  // The order link lives in the message text, so no link button here
+  const rows: InlineKeyboardButton[][] = [];
 
   if (askDeadline) rows.push(...deadlineRows(sessionId));
 
@@ -529,16 +577,15 @@ async function createOrder(
         ? `\n\nФилиал: <b>${info.address.replace(/^Москва,\s*/, "")}</b>`
         : "";
 
-  const deadlineAsk =
-    "\n\nДо\u00A0которого часа принимаем заказы? Выбери ниже\u00A0— на\u00A0странице появится обратный отсчёт.";
+  const linkLine = `\n\nСсылка для заказа: ${orderUrl}`;
+  const deadlineAsk = "\n\nУкажи, до\u00A0скольки принимаем заказы:";
 
   await ctx.reply(
-    `[${phrase}]\n\n${mainLine}${branchLine}${deadlineAsk}`,
+    `[${phrase}]\n\n${mainLine}${branchLine}${linkLine}${deadlineAsk}`,
     {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
       reply_markup: orderKeyboard(
-        orderUrl,
         session.id,
         places,
         menuSlug,
@@ -550,9 +597,9 @@ async function createOrder(
 }
 
 // Deadline picker: "orders are collected for N more minutes"
-bot.callbackQuery(/^until:([^:]+):(\d+)$/, async (ctx) => {
+bot.callbackQuery(/^until:([^:]+):(\d{3,4}|none)$/, async (ctx) => {
   const sessionId = ctx.match[1];
-  const minutes = Number(ctx.match[2]);
+  const choice = ctx.match[2];
 
   try {
     const session = await prisma.orderSession.findUnique({
@@ -574,20 +621,25 @@ bot.callbackQuery(/^until:([^:]+):(\d+)$/, async (ctx) => {
       return;
     }
 
-    const deadlineAt = new Date(Date.now() + minutes * 60 * 1000);
+    const deadlineAt =
+      choice === "none" ? null : deadlineFromSlot(choice.padStart(4, "0"));
+
     await prisma.orderSession.update({
       where: { id: sessionId },
       data: { deadlineAt },
     });
 
     await ctx.answerCallbackQuery({
-      text: `Принимаем заказы до ${formatDeadline(deadlineAt)}`,
+      text: deadlineAt
+        ? `Принимаем заказы до ${formatDeadline(deadlineAt)}`
+        : "Без ограничения по времени",
     });
 
     const msg = ctx.callbackQuery.message;
     if (msg?.text) {
+      // Drop the question, keep everything above it
       const withoutAsk = msg.text.replace(
-        /\n*До\u00A0?которого часа[^]*$/u,
+        /\n*Укажи, до\u00A0?скольки принимаем заказы:[\s\S]*$/u,
         ""
       );
       const keyboard = msg.reply_markup?.inline_keyboard
@@ -595,7 +647,11 @@ bot.callbackQuery(/^until:([^:]+):(\d+)$/, async (ctx) => {
         .filter((row) => row.length > 0);
       try {
         await ctx.editMessageText(
-          `${withoutAsk.trimEnd()}\n\n⏳ Заказы принимаем до <b>${formatDeadline(deadlineAt)}</b>`,
+          `${withoutAsk.trimEnd()}\n\n${
+            deadlineAt
+              ? `⏳ Заказы принимаем до <b>${formatDeadline(deadlineAt)}</b>`
+              : "⏳ Время не\u00A0ограничено"
+          }`,
           {
             parse_mode: "HTML",
             link_preview_options: { is_disabled: true },
@@ -648,16 +704,12 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
     const places = (session.placeOptions as BrandPlace[] | null) || [];
     try {
       await ctx.editMessageText(
-        `[${pickRandom(OBED_PHRASES)}]\n\nЗаказываем из <a href="${session.url}">ресторана</a>, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор`,
+        `[${pickRandom(OBED_PHRASES)}]\n\nЗаказываем из <a href="${session.url}">ресторана</a>, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор` +
+          `\n\nСсылка для заказа: ${baseUrl}/order/${sessionId}`,
         {
           parse_mode: "HTML",
           link_preview_options: { is_disabled: true },
-          reply_markup: orderKeyboard(
-            `${baseUrl}/order/${sessionId}`,
-            sessionId,
-            places,
-            slug
-          ),
+          reply_markup: orderKeyboard(sessionId, places, slug),
         }
       );
     } catch {
@@ -742,11 +794,11 @@ bot.callbackQuery(/^place:([^:]+):(\d+)$/, async (ctx) => {
 
     try {
       await ctx.editMessageText(
-        `[${pickRandom(OBED_PHRASES)}]\n\nЗаказываем из <a href="${session.url}">${place.name}</a>, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор\n\nФилиал: <b>${placeLabel(place)}</b>${warning}`,
+        `[${pickRandom(OBED_PHRASES)}]\n\nЗаказываем из <a href="${session.url}">${place.name}</a>, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор\n\nФилиал: <b>${placeLabel(place)}</b>\n\nСсылка для заказа: ${orderUrl}${warning}`,
         {
           parse_mode: "HTML",
           link_preview_options: { is_disabled: true },
-          reply_markup: orderKeyboard(orderUrl, sessionId, places, place.slug),
+          reply_markup: orderKeyboard(sessionId, places, place.slug),
         }
       );
     } catch {
