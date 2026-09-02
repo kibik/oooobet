@@ -39,44 +39,47 @@ export function verifyTelegramAuth(data: TelegramUser): boolean {
 }
 
 /**
- * Generate bank payment deep links for P2P transfers.
+ * Payment instructions for a P2P transfer.
  *
- * Sber: uses documented /person/dl/ web deep link
- * T-Bank: opens transfer-by-phone page (no pre-fill API available publicly)
- * Alfa: opens SBP transfer page via mobile redirect
+ * There is deliberately no "open my bank with the amount pre-filled" link
+ * here. Such a link only exists as an SBP payment registered through the
+ * receiving bank's API (qr.nspk.ru/<id>), which needs a merchant agreement we
+ * do not have. The URLs this file used to build were guesses and returned 404
+ * (verified against tbank.ru) or pointed at endpoints that ignore their query
+ * parameters — a button leading nowhere is worse than none.
+ *
+ * What works for every user in every bank: the phone number and the amount,
+ * formatted so a single tap copies them.
  */
 
 function cleanPhone(phone: string): string {
   return phone.replace(/\D/g, "");
 }
 
-export function generateSberbankLink(phone: string, amount: number): string {
+/** +7 999 000-11-22 — readable, and unambiguous when copied by hand. */
+export function formatPhone(phone: string): string {
   const p = cleanPhone(phone);
-  return `https://www.sberbank.ru/ru/person/dl/open_qr?type=bt&receiver=${p}&amount=${amount}&currency=RUB`;
+  if (p.length !== 11) return p ? `+${p}` : "";
+  return `+${p[0]} ${p.slice(1, 4)} ${p.slice(4, 7)}-${p.slice(7, 9)}-${p.slice(9)}`;
 }
 
-export function generateTbankLink(phone: string, amount: number): string {
-  const p = cleanPhone(phone);
-  // T-Bank web transfer page — phone & amount as hints
-  return `https://www.tbank.ru/transfer/bank-by-phone?phone=${p}&sum=${amount}`;
+export interface PaymentDetails {
+  /** Digits only, ready for the clipboard: 79990001122 */
+  phone: string;
+  /** Human-readable: +7 999 000-11-22 */
+  phoneFormatted: string;
+  amount: number;
 }
 
-export function generateAlfaLink(phone: string, amount: number): string {
-  const p = cleanPhone(phone);
-  // Alfa-Bank mobile redirect for SBP transfer
-  return `https://alfa-mobile.alfabank.ru/mobile-public/goto/transfer-by-phone?phone=${p}&amount=${amount}`;
-}
-
-export interface PaymentLinks {
-  sber: string;
-  tbank: string;
-  alfa: string;
-}
-
-export function generatePaymentLinks(phone: string, amount: number): PaymentLinks {
+export function paymentDetails(
+  phone: string,
+  amount: number
+): PaymentDetails | null {
+  const digits = cleanPhone(phone);
+  if (digits.length < 10) return null;
   return {
-    sber: generateSberbankLink(phone, amount),
-    tbank: generateTbankLink(phone, amount),
-    alfa: generateAlfaLink(phone, amount),
+    phone: digits,
+    phoneFormatted: formatPhone(digits),
+    amount: Math.round(amount),
   };
 }

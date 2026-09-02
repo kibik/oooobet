@@ -3,6 +3,7 @@ import { webhookCallback } from "grammy";
 import type { InlineKeyboardButton } from "grammy/types";
 import { getBot } from "@/lib/bot";
 import { prisma } from "@/lib/prisma";
+import { startReminderTicker, stopReminders } from "@/lib/reminders";
 import { Prisma } from "@prisma/client";
 import {
   parseSlug,
@@ -14,6 +15,9 @@ import {
 } from "@/lib/yandex-eda";
 
 const bot = getBot();
+
+// Payment nudges are swept from this process
+startReminderTicker();
 
 const COFFEE_FACTS = [
   "Кофеин повышает кортизол — организм думает, что вы в стрессе. Постоянно.",
@@ -368,16 +372,38 @@ function placeLabel(place: BrandPlace): string {
 }
 
 /** Keyboard: order link + one button per alternative branch. */
+const DEADLINE_CHOICES = [15, 30, 45, 60] as const;
+
+function deadlineRows(sessionId: string): InlineKeyboardButton[][] {
+  return [
+    DEADLINE_CHOICES.map((minutes) => ({
+      text: `${minutes} мин`,
+      callback_data: `until:${sessionId}:${minutes}`,
+    })),
+  ];
+}
+
+function formatDeadline(deadline: Date): string {
+  return new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Moscow",
+  }).format(deadline);
+}
+
 function orderKeyboard(
   orderUrl: string,
   sessionId: string,
   places: BrandPlace[],
   currentSlug: string | null,
-  menuMissing: boolean = false
+  menuMissing: boolean = false,
+  askDeadline: boolean = false
 ) {
   const rows: InlineKeyboardButton[][] = [
     [{ text: "Погнали заказывать", url: orderUrl }],
   ];
+
+  if (askDeadline) rows.push(...deadlineRows(sessionId));
 
   if (menuMissing) {
     rows.push([
@@ -503,8 +529,11 @@ async function createOrder(
         ? `\n\nФилиал: <b>${info.address.replace(/^Москва,\s*/, "")}</b>`
         : "";
 
+  const deadlineAsk =
+    "\n\nДо\u00A0которого часа принимаем заказы? Выбери ниже\u00A0— на\u00A0странице появится обратный отсчёт.";
+
   await ctx.reply(
-    `[${phrase}]\n\n${mainLine}${branchLine}`,
+    `[${phrase}]\n\n${mainLine}${branchLine}${deadlineAsk}`,
     {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
@@ -513,11 +542,77 @@ async function createOrder(
         session.id,
         places,
         menuSlug,
-        menuCount === 0
+        menuCount === 0,
+        true
       ),
     }
   );
 }
+
+// Deadline picker: "orders are collected for N more minutes"
+bot.callbackQuery(/^until:([^:]+):(\d+)$/, async (ctx) => {
+  const sessionId = ctx.match[1];
+  const minutes = Number(ctx.match[2]);
+
+  try {
+    const session = await prisma.orderSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, adminId: true, status: true },
+    });
+    if (!session) {
+      await ctx.answerCallbackQuery({ text: "Заказ не найден 🤷" });
+      return;
+    }
+    if (session.adminId !== BigInt(ctx.from.id)) {
+      await ctx.answerCallbackQuery({
+        text: "Время ставит тот, кто создал заказ",
+      });
+      return;
+    }
+    if (session.status !== "OPEN") {
+      await ctx.answerCallbackQuery({ text: "Сбор заказов уже завершён" });
+      return;
+    }
+
+    const deadlineAt = new Date(Date.now() + minutes * 60 * 1000);
+    await prisma.orderSession.update({
+      where: { id: sessionId },
+      data: { deadlineAt },
+    });
+
+    await ctx.answerCallbackQuery({
+      text: `Принимаем заказы до ${formatDeadline(deadlineAt)}`,
+    });
+
+    const msg = ctx.callbackQuery.message;
+    if (msg?.text) {
+      const withoutAsk = msg.text.replace(
+        /\n*До\u00A0?которого часа[^]*$/u,
+        ""
+      );
+      const keyboard = msg.reply_markup?.inline_keyboard
+        ?.map((row) => row.filter((b) => !("callback_data" in b && String(b.callback_data).startsWith("until:"))))
+        .filter((row) => row.length > 0);
+      try {
+        await ctx.editMessageText(
+          `${withoutAsk.trimEnd()}\n\n⏳ Заказы принимаем до <b>${formatDeadline(deadlineAt)}</b>`,
+          {
+            parse_mode: "HTML",
+            link_preview_options: { is_disabled: true },
+            ...(keyboard?.length
+              ? { reply_markup: { inline_keyboard: keyboard } }
+              : {}),
+          }
+        );
+      } catch {
+        /* too old to edit — the deadline is saved anyway */
+      }
+    }
+  } catch (err) {
+    console.error("deadline callback error:", err);
+    await ctx.answerCallbackQuery({ text: "Что-то пошло не так" });
+  }
+});
 
 // "Load the menu again" button for when Yandex was unreachable
 bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
@@ -694,6 +789,8 @@ bot.callbackQuery(/^paid:(.+)$/, async (ctx) => {
         data: { sessionId, userId: BigInt(tgUser.id) },
       });
     }
+
+    await stopReminders(sessionId, BigInt(tgUser.id));
 
     await ctx.answerCallbackQuery({ text: "Принято! 💸" });
 

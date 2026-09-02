@@ -19,6 +19,8 @@ model User {
   initiatedOrders OrderSession[] @relation("AdminRelation")
   authTokens      AuthToken[]
   payments        Payment[]
+  participations  Participant[]
+  reminders       PaymentReminder[]
 }
 
 model OrderSession {
@@ -31,6 +33,7 @@ model OrderSession {
   placeAddress    String?
   placeOptions    Json? // other branches to choose from: [{slug,name,address}]
   status          String      @default("OPEN")
+  deadlineAt      DateTime? // orders are collected until this moment
   deliveryFee     Int         @default(0)
   serviceFee      Int         @default(0)
   discountPercent Int         @default(0)
@@ -39,7 +42,38 @@ model OrderSession {
   items           OrderItem[]
   menuItems       MenuItem[]
   payments        Payment[]
+  participants    Participant[]
+  reminders       PaymentReminder[]
   createdAt       DateTime    @default(now())
+}
+
+// "I'm done choosing" marks, so everyone sees who is still picking dishes
+model Participant {
+  id        String       @id @default(cuid())
+  sessionId String
+  session   OrderSession @relation(fields: [sessionId], references: [id])
+  userId    BigInt
+  user      User         @relation(fields: [userId], references: [id])
+  readyAt   DateTime     @default(now())
+
+  @@unique([sessionId, userId])
+}
+
+// Nudges for participants who haven't marked their transfer yet
+model PaymentReminder {
+  id        String       @id @default(cuid())
+  sessionId String
+  session   OrderSession @relation(fields: [sessionId], references: [id])
+  userId    BigInt
+  user      User         @relation(fields: [userId], references: [id])
+  amount    Int
+  nextAt    DateTime // when to send the next nudge
+  sentCount Int          @default(0)
+  doneAt    DateTime? // set when the user finally taps "I paid"
+  createdAt DateTime     @default(now())
+
+  @@unique([sessionId, userId])
+  @@index([doneAt, nextAt])
 }
 
 model MenuItem {

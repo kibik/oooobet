@@ -167,3 +167,45 @@
 .viz-bar {
   background-color: var(--viz-series-1);
 }
+
+/* Participant status: "выбирает" — food dropping into the basket */
+@keyframes picker-food-drop {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0; }
+  15%  { opacity: 1; }
+  70%  { transform: translate(1px, 5px) scale(0.9); opacity: 1; }
+  85%  { transform: translate(1px, 6px) scale(0.6); opacity: 0.4; }
+  100% { transform: translate(1px, 6px) scale(0.4); opacity: 0; }
+}
+
+@keyframes picker-arm-toss {
+  0%, 100% { transform: rotate(0deg); }
+  40%      { transform: rotate(-18deg); }
+}
+
+@keyframes picker-bob {
+  0%, 100% { transform: translateY(0); }
+  40%      { transform: translateY(-0.6px); }
+}
+
+.picker-food {
+  animation: picker-food-drop 1.6s ease-in infinite;
+  transform-origin: center;
+}
+
+.picker-arm {
+  animation: picker-arm-toss 1.6s ease-in-out infinite;
+  transform-origin: 7px 10.5px;
+}
+
+.picker-figure {
+  animation: picker-bob 1.6s ease-in-out infinite;
+  transform-origin: 7px 19px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .picker-food,
+  .picker-arm,
+  .picker-figure {
+    animation: none;
+  }
+}

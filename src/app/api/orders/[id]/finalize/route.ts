@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { getBot } from "@/lib/bot";
-import { generatePaymentLinks } from "@/lib/telegram";
+import { paymentDetails } from "@/lib/telegram";
+import { scheduleFirstReminder } from "@/lib/reminders";
 
 // Format number with thin space thousands separator and before ₽
 function fmtPrice(n: number): string {
@@ -157,8 +158,6 @@ export async function POST(
           await bot.api.sendMessage(Number(userId), summaryText);
           notifiedCount++;
         } else {
-          // Other participants get payment links for 3 banks
-          const links = generatePaymentLinks(adminPhone, total);
           const foodPrice = Math.round(foodDiscounted);
           const extra = Math.round(extraPerPerson);
           const discountNote =
@@ -166,26 +165,33 @@ export async function POST(
               ? ` Еда уже со скидкой ${discountPercent}%.`
               : "";
 
+          // Phone and amount as tappable copy targets — Telegram copies a
+          // <code> block on tap, which works in every bank app.
+          const details = paymentDetails(adminPhone, total);
+          const requisites = details
+            ? `\n\nПеревести <code>${details.amount}</code>\u00A0₽ по\u00A0номеру <code>+${details.phone}</code>` +
+              `\n<i>Нажми на\u00A0номер или\u00A0сумму, чтобы скопировать</i>`
+            : "\n\nНомер для перевода не\u00A0указан — спроси у\u00A0заказавшего.";
+
           await bot.api.sendMessage(
             Number(userId),
             `Обед заказан. С\u00A0тебя ${fmtPrice(total)}. ` +
-              `${fmtPrice(foodPrice)} за\u00A0еду и\u00A0${fmtPrice(extra)} монополисту Яндексу.${discountNote}`,
+              `${fmtPrice(foodPrice)} за\u00A0еду и\u00A0${fmtPrice(extra)} монополисту Яндексу.${discountNote}` +
+              requisites,
             {
               parse_mode: "HTML",
               link_preview_options: { is_disabled: true },
               reply_markup: {
                 inline_keyboard: [
-                  [
-                    { text: "Альфа", url: links.alfa },
-                    { text: "Сбер", url: links.sber },
-                    { text: "Т\u2011банк", url: links.tbank },
-                  ],
                   [{ text: "✅ Я перевёл", callback_data: `paid:${id}` }],
                 ],
               },
             }
           );
           notifiedCount++;
+
+          // Nudge them later if they never tap the button
+          await scheduleFirstReminder(id, data.userId, total);
         }
       } catch (err) {
         console.error(`Failed to notify user ${userId}:`, err);

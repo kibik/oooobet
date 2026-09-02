@@ -71,6 +71,9 @@ export async function GET(
         payments: {
           select: { userId: true, createdAt: true },
         },
+        participants: {
+          select: { userId: true, readyAt: true },
+        },
       },
     });
 

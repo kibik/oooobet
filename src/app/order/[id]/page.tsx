@@ -26,6 +26,9 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { getDailyQuote } from "@/lib/quotes";
+import ParticipantStatus, {
+  type ParticipantState,
+} from "@/components/ParticipantStatus";
 
 // Format number with thin space thousands separator and before ₽
 function fmtPrice(n: number): string {
@@ -63,6 +66,7 @@ interface OrderSession {
   url: string;
   placeName?: string | null;
   placeAddress?: string | null;
+  deadlineAt?: string | null;
   status: string;
   deliveryFee: number;
   serviceFee: number;
@@ -79,6 +83,7 @@ interface OrderSession {
   items: OrderItem[];
   discountPercent: number;
   payments?: Array<{ userId: string }>;
+  participants?: Array<{ userId: string }>;
   createdAt: string;
 }
 
@@ -150,6 +155,16 @@ export default function OrderPage({
     left: number;
     width: number;
   } | null>(null);
+
+  // "Выбор сделан" state
+  const [markingReady, setMarkingReady] = useState(false);
+
+  // Re-render once a second so the deadline countdown ticks
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   // Options dialog (dish with options: spiciness, sauce, drink, ...)
   const [optionsItem, setOptionsItem] = useState<MenuItem | null>(null);
@@ -419,6 +434,60 @@ export default function OrderPage({
     }
   };
 
+  const [markingPaid, setMarkingPaid] = useState(false);
+  const [copied, setCopied] = useState<"phone" | "amount" | null>(null);
+
+  const copyToClipboard = async (value: string, what: "phone" | "amount") => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(what);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      toast.error("Не получилось скопировать — выдели и скопируй вручную");
+    }
+  };
+
+  const handleMarkPaid = async () => {
+    setMarkingPaid(true);
+    try {
+      const res = await fetch(`/api/orders/${id}/paid`, { method: "POST" });
+      if (res.ok) {
+        toast.success("Отметил перевод. Напоминания больше не придут");
+        fetchOrder();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error || "Не получилось");
+      }
+    } catch {
+      toast.error("Ошибка сети");
+    } finally {
+      setMarkingPaid(false);
+    }
+  };
+
+  const handleToggleReady = async () => {
+    if (!user) return;
+    setMarkingReady(true);
+    try {
+      const res = await fetch(`/api/orders/${id}/ready`, {
+        method: iAmReady ? "DELETE" : "POST",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        toast.success(
+          iAmReady ? "Продолжай выбирать" : "Готово! Ждём остальных 🍽"
+        );
+        fetchOrder();
+      } else {
+        toast.error(data.error || "Не получилось");
+      }
+    } catch {
+      toast.error("Ошибка сети");
+    } finally {
+      setMarkingReady(false);
+    }
+  };
+
   const handleDeleteItem = async (itemId: string) => {
     try {
       const res = await fetch(`/api/orders/${id}/items?itemId=${itemId}`, {
@@ -495,6 +564,7 @@ export default function OrderPage({
   const isAdmin = user && session && user.id === session.adminId;
   const uniqueUsers = groupedItems ? Object.keys(groupedItems).length : 0;
 
+
   // Count how many of each menu item the current user has ordered.
   // Items with options can differ in price, so we also count by dish name.
   const myItemCounts: Record<string, { count: number; itemIds: string[] }> = {};
@@ -518,9 +588,64 @@ export default function OrderPage({
     }
   }
 
+  const fmtPhone = (phone: string | null): string => {
+    const p = (phone || "").replace(/\D/g, "");
+    if (p.length !== 11) return p ? `+${p}` : "";
+    return `+${p[0]} ${p.slice(1, 4)} ${p.slice(4, 7)}-${p.slice(7, 9)}-${p.slice(9)}`;
+  };
+
   const paidUserIds = new Set(
     (session?.payments || []).map((p) => p.userId)
   );
+  const readyUserIds = new Set(
+    (session?.participants || []).map((p) => p.userId)
+  );
+  const iAmReady = user ? readyUserIds.has(user.id) : false;
+  // What the current user owes once the order is placed
+  const myTotal = (() => {
+    if (!session || !user || session.status !== "ORDERED") return null;
+    const mine = groupedItems?.[user.id];
+    if (!mine || uniqueUsers === 0) return null;
+    const extra = (session.deliveryFee + session.serviceFee) / uniqueUsers;
+    const discountMult = 1 - (session.discountPercent || 0) / 100;
+    return Math.round(mine.total * discountMult + extra);
+  })();
+  const iPaid = user ? paidUserIds.has(user.id) : false;
+
+  const participantState = (userId: string): ParticipantState => {
+    if (paidUserIds.has(userId)) return "paid";
+    if (readyUserIds.has(userId)) return "ready";
+    return "picking";
+  };
+
+  // Dish rows in the order list reuse the menu's hover preview
+  const menuByName = useMemo(() => {
+    const map = new Map<string, MenuItem>();
+    for (const list of Object.values(menu?.categories || {})) {
+      for (const item of list) map.set(item.name, item);
+    }
+    return map;
+  }, [menu]);
+
+  // Countdown to the deadline the admin set in the bot
+  const deadlineMs = session?.deadlineAt
+    ? new Date(session.deadlineAt).getTime()
+    : null;
+  const msLeft = deadlineMs !== null ? deadlineMs - now : null;
+  const countdown = (() => {
+    if (msLeft === null) return null;
+    if (msLeft <= 0) return { text: "время вышло", expired: true };
+    const totalSec = Math.floor(msLeft / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const sec = totalSec % 60;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return {
+      text: h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`,
+      expired: false,
+      urgent: msLeft < 5 * 60 * 1000,
+    };
+  })();
 
   const hasMenu = menu && menu.total > 0;
   const categories = menu ? Object.keys(menu.categories) : [];
@@ -622,9 +747,9 @@ export default function OrderPage({
         {/* Order Info Card */}
         <Card>
           <CardHeader>
-            <div className="flex items-start justify-between">
-              <div className="space-y-1">
-                <CardTitle className="text-base flex items-center gap-2">
+            <div className="flex items-start justify-between gap-x-3 gap-y-1 flex-wrap">
+              <div className="space-y-1 min-w-0">
+                <CardTitle className="text-base flex items-center gap-2 flex-wrap">
                   <span>За{"\u00A0"}всё платит</span>
                   {(session.admin.avatarUrl ?? session.admin.photoUrl) ? (
                     <img
@@ -653,7 +778,27 @@ export default function OrderPage({
                   )}
                 </CardTitle>
               </div>
-              <Badge variant={statusInfo.variant}>{statusInfo.text}</Badge>
+              <div className="flex items-center gap-2 shrink-0">
+                {countdown && session.status === "OPEN" && (
+                  <span
+                    className={`text-lg sm:text-xl font-bold tabular-nums leading-none ${
+                      countdown.expired
+                        ? "text-muted-foreground"
+                        : countdown.urgent
+                          ? "text-destructive"
+                          : ""
+                    }`}
+                    title={
+                      countdown.expired
+                        ? "приём заказов закрыт"
+                        : "до конца сбора заказов"
+                    }
+                  >
+                    {countdown.expired ? "⏳ —" : `⏳ ${countdown.text}`}
+                  </span>
+                )}
+                <Badge variant={statusInfo.variant}>{statusInfo.text}</Badge>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -685,6 +830,7 @@ export default function OrderPage({
                 </span>
               )}
             </p>
+
           </CardContent>
         </Card>
 
@@ -863,13 +1009,26 @@ export default function OrderPage({
                         )}
                       </div>
 
-                      {/* Manual input toggle inside menu card */}
+                      {/* Done choosing + manual entry underneath */}
                       <Separator />
                       <div>
+                        <Button
+                          size="lg"
+                          variant={iAmReady ? "outline" : "default"}
+                          className="w-full"
+                          disabled={markingReady}
+                          onClick={handleToggleReady}
+                        >
+                          {markingReady
+                            ? "Секунду..."
+                            : iAmReady
+                              ? "Я ещё выбираю"
+                              : "Выбор сделан, заказывайте!"}
+                        </Button>
                         <button
                           type="button"
                           onClick={() => setShowManualForm(!showManualForm)}
-                          className="text-sm text-muted-foreground hover:text-foreground transition-colors w-full text-center py-1 cursor-pointer"
+                          className="text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-center py-2 cursor-pointer"
                         >
                           {showManualForm
                             ? "Скрыть ручной ввод"
@@ -1012,6 +1171,7 @@ export default function OrderPage({
                               </span>
                             )}
                             {itemUser.firstName} {itemUser.lastName || ""}
+                            <ParticipantStatus state={participantState(userId)} />
                           </h3>
                           <span className="text-sm text-muted-foreground tabular-nums text-right min-w-[5rem]">
                             {fmtPrice(total)}
@@ -1021,7 +1181,12 @@ export default function OrderPage({
                           {items.map((item) => (
                             <div
                               key={item.id}
-                              className="flex items-center justify-between py-1 text-sm"
+                              className="flex items-center justify-between py-1 text-sm rounded hover:bg-accent/40 transition-colors -mx-1 px-1"
+                              onMouseEnter={(e) => {
+                                const menuItem = menuByName.get(item.dishName);
+                                if (menuItem) handleMenuRowEnter(menuItem, e);
+                              }}
+                              onMouseLeave={handleMenuRowLeave}
                             >
                               <span>
                                 {item.dishName}
@@ -1247,6 +1412,77 @@ export default function OrderPage({
                         );
                       }
                     )}
+
+                  {/* My own requisites: no bank deeplink can pre-fill an
+                      amount without the bank's API, so make the phone and the
+                      sum one tap away instead. */}
+                  {myTotal !== null && (
+                    <div className="rounded-md border p-3 space-y-3">
+                      {iPaid ? (
+                        <p className="text-sm text-green-600 dark:text-green-500 font-medium">
+                          Перевод отмечен — спасибо! ✅
+                        </p>
+                      ) : (
+                        <>
+                          <div className="flex items-baseline justify-between gap-3">
+                            <span className="text-sm text-muted-foreground">
+                              С тебя
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                copyToClipboard(String(myTotal), "amount")
+                              }
+                              className="text-xl font-bold tabular-nums hover:text-blue-600 transition-colors cursor-pointer"
+                              title="Скопировать сумму"
+                            >
+                              {copied === "amount" ? "скопировано" : fmtPrice(myTotal)}
+                            </button>
+                          </div>
+
+                          {session.admin.phoneNumber ? (
+                            <div className="flex items-baseline justify-between gap-3">
+                              <span className="text-sm text-muted-foreground">
+                                На номер
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  copyToClipboard(
+                                    session.admin.phoneNumber || "",
+                                    "phone"
+                                  )
+                                }
+                                className="text-sm font-mono font-medium hover:text-blue-600 transition-colors cursor-pointer"
+                                title="Скопировать номер"
+                              >
+                                {copied === "phone"
+                                  ? "скопировано"
+                                  : fmtPhone(session.admin.phoneNumber)}
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              Номер не указан — спроси у{"\u00A0"}
+                              {session.admin.firstName}
+                            </p>
+                          )}
+
+                          <p className="text-xs text-muted-foreground">
+                            Нажми на сумму или номер, чтобы скопировать
+                          </p>
+
+                          <Button
+                            className="w-full"
+                            disabled={markingPaid}
+                            onClick={handleMarkPaid}
+                          >
+                            {markingPaid ? "Отмечаю..." : "Я перевёл"}
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
