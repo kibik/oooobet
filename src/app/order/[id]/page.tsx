@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { getDailyQuote } from "@/lib/quotes";
+import { initial } from "@/lib/utils";
 import ParticipantStatus, {
   type ParticipantState,
 } from "@/components/ParticipantStatus";
@@ -732,7 +733,7 @@ export default function OrderPage({
                   />
                 ) : (
                   <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center text-xs font-medium text-muted-foreground">
-                    {user.firstName[0]}
+                    {initial(user.firstName, user.lastName)}
                   </div>
                 )}
                 <span className="text-sm text-muted-foreground whitespace-nowrap">
@@ -759,7 +760,7 @@ export default function OrderPage({
                     />
                   ) : (
                     <span className="w-5 h-5 rounded-full bg-muted inline-flex items-center justify-center text-[10px] font-medium text-muted-foreground shrink-0">
-                      {session.admin.firstName[0]}
+                      {initial(session.admin.firstName, session.admin.lastName)}
                     </span>
                   )}
                   {session.admin.username ? (
@@ -1167,7 +1168,7 @@ export default function OrderPage({
                               />
                             ) : (
                               <span className="w-5 h-5 rounded-full bg-muted inline-flex items-center justify-center text-[10px] font-medium text-muted-foreground shrink-0">
-                                {itemUser.firstName[0]}
+                                {initial(itemUser.firstName, itemUser.lastName)}
                               </span>
                             )}
                             {itemUser.firstName} {itemUser.lastName || ""}
@@ -1387,7 +1388,7 @@ export default function OrderPage({
                                 />
                               ) : (
                                 <span className="w-5 h-5 rounded-full bg-muted inline-flex items-center justify-center text-[10px] font-medium text-muted-foreground shrink-0">
-                                  {itemUser.firstName[0]}
+                                  {initial(itemUser.firstName, itemUser.lastName)}
                                 </span>
                               )}
                               {itemUser.firstName} {itemUser.lastName || ""}

@@ -15,6 +15,11 @@ model User {
   photoUrl        String?
   photoFileId    String?   // Telegram file_id for bot users (avatar proxied via /api/avatar)
   phoneNumber     String?
+  // How this person prefers to receive transfers:
+  // payBank builds an SBP link from the phone; payLink is their own ready link
+  // (Alfa & co. hand out c2c.cbrpay.ru/<id>, which cannot be generated)
+  payBank         String?
+  payLink         String?
   items           OrderItem[]
   initiatedOrders OrderSession[] @relation("AdminRelation")
   authTokens      AuthToken[]

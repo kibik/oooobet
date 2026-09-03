@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { parseSlug } from "@/lib/yandex-eda";
+import { initial } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -226,7 +227,7 @@ export default async function HistoryPage() {
                           />
                         ) : (
                           <span className="w-6 h-6 rounded-full bg-muted inline-flex items-center justify-center text-[10px] font-medium text-muted-foreground shrink-0">
-                            {r.name[0]}
+                            {initial(r.name)}
                           </span>
                         )}
                         <span className="text-sm truncate">{r.name}</span>

@@ -63,6 +63,65 @@ export function formatPhone(phone: string): string {
   return `+${p[0]} ${p.slice(1, 4)} ${p.slice(4, 7)}-${p.slice(7, 9)}-${p.slice(9)}`;
 }
 
+/**
+ * SBP transfer links.
+ *
+ * A link that pre-fills the amount only exists as an SBP payment registered by
+ * the receiving bank (c2c.cbrpay.ru/<id>, qr.nspk.ru/<id>) — those ids cannot be
+ * generated, only saved from the recipient's own banking app (`payLink`).
+ * What CAN be built from a phone number is a "transfer to this number in this
+ * bank" link; the bank code identifies the *recipient's* bank.
+ */
+
+/**
+ * Banks we can build a working link for. Both forms below are verified on a
+ * real phone: they open the bank with the recipient and the amount filled in.
+ * Other banks hand out a personal c2c link instead — see `payLink`.
+ */
+export const BANK_CODES: Record<string, { code: string; title: string }> = {
+  sber: { code: "100000000111", title: "Сбер" },
+  tbank: { code: "100000000004", title: "Т‑Банк" },
+};
+
+export interface PayTarget {
+  url: string;
+  title: string;
+}
+
+/**
+ * Where to send the payer. Returns null when we know nothing beyond the phone
+ * number — the caller then falls back to copyable requisites.
+ */
+export function payTarget(
+  recipient: { phoneNumber: string | null; payBank: string | null; payLink: string | null },
+  amount: number
+): PayTarget | null {
+  // A saved personal link wins: it is the only kind that can carry an amount
+  if (recipient.payLink && /^https:\/\//.test(recipient.payLink)) {
+    return { url: recipient.payLink, title: `Перевести ${Math.round(amount)} ₽` };
+  }
+
+  const phone = (recipient.phoneNumber || "").replace(/\D/g, "");
+  if (phone.length !== 11) return null;
+
+  const rub = Math.round(amount);
+
+  if (recipient.payBank === "tbank") {
+    return {
+      url: `https://t.tb.ru/c2cSberQr/${phone}?amount=${rub}`,
+      title: `Перевести ${rub} ₽`,
+    };
+  }
+
+  const bank = recipient.payBank ? BANK_CODES[recipient.payBank] : null;
+  if (!bank) return null;
+
+  return {
+    url: `https://www.sberbank.com/sms/pbpn?requisiteNumber=${phone}&bankCode=${bank.code}&amount=${rub}`,
+    title: `Перевести ${rub} ₽`,
+  };
+}
+
 export interface PaymentDetails {
   /** Digits only, ready for the clipboard: 79990001122 */
   phone: string;

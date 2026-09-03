@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { getBot } from "@/lib/bot";
-import { paymentDetails } from "@/lib/telegram";
+import { paymentDetails, payTarget } from "@/lib/telegram";
 import { scheduleFirstReminder } from "@/lib/reminders";
 
 // Format number with thin space thousands separator and before ₽
@@ -82,19 +82,31 @@ export async function POST(
     // Calculate totals per user
     const userTotals = new Map<
       string,
-      { userId: bigint; total: number; firstName: string }
+      {
+        userId: bigint;
+        total: number;
+        firstName: string;
+        dishes: Array<{ name: string; options: string | null; price: number }>;
+      }
     >();
 
     for (const item of orderSession.items) {
       const key = item.userId.toString();
+      const dish = {
+        name: item.dishName,
+        options: item.options,
+        price: item.price,
+      };
       const existing = userTotals.get(key);
       if (existing) {
         existing.total += item.price;
+        existing.dishes.push(dish);
       } else {
         userTotals.set(key, {
           userId: item.userId,
           total: item.price,
           firstName: item.user.firstName,
+          dishes: [dish],
         });
       }
     }
@@ -165,6 +177,14 @@ export async function POST(
               ? ` Еда уже со скидкой ${discountPercent}%.`
               : "";
 
+          // What exactly they ordered, so the sum is verifiable
+          const dishLines = data.dishes
+            .map((dish) => {
+              const options = dish.options ? ` ${dish.options}.` : "";
+              return `— ${dish.name}.${options} ${fmtPrice(dish.price)}`;
+            })
+            .join("\n");
+
           // Phone and amount as tappable copy targets — Telegram copies a
           // <code> block on tap, which works in every bank app.
           const details = paymentDetails(adminPhone, total);
@@ -173,19 +193,23 @@ export async function POST(
               `\n<i>Нажми на\u00A0номер или\u00A0сумму, чтобы скопировать</i>`
             : "\n\nНомер для перевода не\u00A0указан — спроси у\u00A0заказавшего.";
 
+          // A one-tap link exists only if the recipient told us their bank
+          const target = payTarget(orderSession.admin, total);
+          const buttons = [
+            ...(target ? [[{ text: target.title, url: target.url }]] : []),
+            [{ text: "✅ Я перевёл", callback_data: `paid:${id}` }],
+          ];
+
           await bot.api.sendMessage(
             Number(userId),
             `Обед заказан. С\u00A0тебя ${fmtPrice(total)}. ` +
               `${fmtPrice(foodPrice)} за\u00A0еду и\u00A0${fmtPrice(extra)} монополисту Яндексу.${discountNote}` +
+              `\n\n${dishLines}` +
               requisites,
             {
               parse_mode: "HTML",
               link_preview_options: { is_disabled: true },
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: "✅ Я перевёл", callback_data: `paid:${id}` }],
-                ],
-              },
+              reply_markup: { inline_keyboard: buttons },
             }
           );
           notifiedCount++;

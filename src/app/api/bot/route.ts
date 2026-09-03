@@ -5,6 +5,7 @@ import { getBot } from "@/lib/bot";
 import { prisma } from "@/lib/prisma";
 import { startReminderTicker, stopReminders } from "@/lib/reminders";
 import { Prisma } from "@prisma/client";
+import { BANK_CODES } from "@/lib/telegram";
 import {
   parseSlug,
   fetchMenu,
@@ -113,6 +114,37 @@ function pluralizeDishes(n: number): string {
 // Store pending restaurant URLs while waiting for phone number
 const pendingUrls = new Map<number, string>();
 
+/**
+ * Cache the user's Telegram avatar if we don't have one yet.
+ *
+ * Telegram only hands a bot the profile photo when the user allows "everyone"
+ * to see it, so this can legitimately find nothing — then the UI falls back to
+ * an initial. Worth retrying on later contact: privacy settings change, and
+ * people who never signed in on the site have no photo stored at all.
+ */
+async function refreshAvatar(userId: number): Promise<string | null> {
+  try {
+    const existing = await prisma.user.findUnique({
+      where: { id: BigInt(userId) },
+      select: { photoFileId: true },
+    });
+    if (existing?.photoFileId) return existing.photoFileId;
+
+    const photos = await bot.api.getUserProfilePhotos(userId, { limit: 1 });
+    const sizes = photos.photos?.[0];
+    const largest = sizes?.[sizes.length - 1];
+    if (!largest?.file_id) return null;
+
+    await prisma.user.update({
+      where: { id: BigInt(userId) },
+      data: { photoFileId: largest.file_id },
+    });
+    return largest.file_id;
+  } catch {
+    return null; // no photo visible to the bot, or the user isn't stored yet
+  }
+}
+
 // Handle /start command (including auth tokens: /start auth_XXXXX)
 bot.command("start", async (ctx) => {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
@@ -180,6 +212,55 @@ bot.command("start", async (ctx) => {
       `Авторизуйся на\u00A0сайте: ${baseUrl}`;
 
   await ctx.reply(intro, { parse_mode: "HTML" });
+});
+
+// Where the person receives transfers — needed to build a one-tap SBP link
+const BANK_PICKER = {
+  inline_keyboard: [
+    [
+      { text: "Сбер", callback_data: "bank:sber" },
+      { text: "Т‑Банк", callback_data: "bank:tbank" },
+    ],
+    [{ text: "Другой банк — пришлю ссылку", callback_data: "bank:link" }],
+  ],
+};
+
+const BANK_PROMPT =
+  "В\u00A0каком банке ты принимаешь переводы? Тогда в\u00A0сообщениях о\u00A0долге появится кнопка перевода, а\u00A0не только номер.\n\n" +
+  "Если банка нет в\u00A0списке — открой в\u00A0приложении «Поделиться QR для\u00A0переводов», скопируй ссылку и\u00A0пришли её мне.";
+
+bot.command("bank", async (ctx) => {
+  await ctx.reply(BANK_PROMPT, { reply_markup: BANK_PICKER });
+});
+
+bot.callbackQuery(/^bank:(sber|tbank|link)$/, async (ctx) => {
+  const choice = ctx.match[1];
+  const userId = BigInt(ctx.from.id);
+
+  if (choice === "link") {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Пришли ссылку из\u00A0приложения банка (обычно вида https://c2c.cbrpay.ru/…). " +
+        "Я\u00A0сохраню её и\u00A0буду показывать кнопку перевода."
+    );
+    return;
+  }
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { payBank: choice, payLink: null },
+  });
+
+  const title = BANK_CODES[choice]?.title ?? choice;
+  await ctx.answerCallbackQuery({ text: `Записал: ${title}` });
+  try {
+    await ctx.editMessageText(
+      `Переводы принимаешь в\u00A0<b>${title}</b>. Теперь в\u00A0сообщениях о\u00A0долге будет кнопка перевода.\n\nПоменять\u00A0— /bank`,
+      { parse_mode: "HTML" }
+    );
+  } catch {
+    /* message too old to edit */
+  }
 });
 
 // Handle shared contact — save phone number
@@ -251,6 +332,21 @@ bot.on("message:text", async (ctx) => {
     return;
   }
 
+  // A personal SBP link pasted after /bank → link
+  const payLinkMatch = text.match(
+    /https:\/\/(?:c2c\.cbrpay\.ru|qr\.nspk\.ru|[a-z0-9.-]*\.?tb\.ru|www\.sberbank\.(?:ru|com))\/\S+/i
+  );
+  if (payLinkMatch && !isGroup) {
+    await prisma.user.update({
+      where: { id: BigInt(tgUser.id) },
+      data: { payLink: payLinkMatch[0], payBank: null },
+    });
+    await ctx.reply(
+      "Сохранил твою ссылку для\u00A0переводов. В\u00A0сообщениях о\u00A0долге теперь будет кнопка перевода.\n\nПоменять\u00A0— /bank"
+    );
+    return;
+  }
+
   // Check if the message contains a Yandex Eda link
   const edaRegex = /https?:\/\/eda\.yandex\.ru\S*/i;
   const match = text.match(edaRegex);
@@ -295,6 +391,9 @@ async function handleEdaLink(
       username: tgUser.username || null,
     },
   });
+
+  // People who order but never signed in on the site have no avatar stored
+  await refreshAvatar(tgUser.id);
 
   // Check if user has phone number
   if (!user.phoneNumber) {
