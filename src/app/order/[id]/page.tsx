@@ -27,17 +27,10 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { getDailyQuote } from "@/lib/quotes";
 import { initial } from "@/lib/utils";
+import { formatMoney, roundIn } from "@/lib/money";
 import ParticipantStatus, {
   type ParticipantState,
 } from "@/components/ParticipantStatus";
-
-// Format number with thin space thousands separator and before ₽
-function fmtPrice(n: number): string {
-  const formatted = Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, "\u2009");
-  return `${formatted}\u2009₽`;
-}
 
 // Yandex Eda CDN resizes on the fly — swap the 200x200 thumbnail for a big one
 function bigImageUrl(url: string): string {
@@ -65,6 +58,7 @@ interface OrderItem {
 interface OrderSession {
   id: string;
   url: string;
+  currency?: string;
   placeName?: string | null;
   placeAddress?: string | null;
   deadlineAt?: string | null;
@@ -128,6 +122,17 @@ export default function OrderPage({
 
   // Order state
   const [session, setSession] = useState<OrderSession | null>(null);
+  // Prices follow the delivery service's currency (₽ for Yandex, AED for Talabat)
+  const fmtPrice = useCallback(
+    (value: number) => formatMoney(value, session?.currency || "RUB"),
+    [session?.currency]
+  );
+  const roundMoney = useCallback(
+    (value: number) => roundIn(value, session?.currency || "RUB"),
+    [session?.currency]
+  );
+  // What to write next to an input: "₽" for roubles, "AED" for dirhams
+  const unit = !session?.currency || session.currency === "RUB" ? "₽" : session.currency;
   const [loading, setLoading] = useState(true);
 
   // Menu state
@@ -144,6 +149,7 @@ export default function OrderPage({
 
   // Admin finalize state
   const [deliveryFee, setDeliveryFee] = useState("");
+  const deliveryPrefilled = useRef(false);
   const [serviceFee, setServiceFee] = useState("");
   const [discountPct, setDiscountPct] = useState("");
   const [finalizing, setFinalizing] = useState(false);
@@ -200,6 +206,12 @@ export default function OrderPage({
       const data = await res.json();
       if (data.session) {
         setSession(data.session);
+        // A fee the service told us beforehand. Filled once, so the
+        // five-second refresh never overwrites what the admin typed.
+        if (data.session.deliveryFee > 0 && !deliveryPrefilled.current) {
+          deliveryPrefilled.current = true;
+          setDeliveryFee(String(data.session.deliveryFee));
+        }
       }
     } catch {
       toast.error("Ошибка загрузки заказа");
@@ -609,7 +621,7 @@ export default function OrderPage({
     if (!mine || uniqueUsers === 0) return null;
     const extra = (session.deliveryFee + session.serviceFee) / uniqueUsers;
     const discountMult = 1 - (session.discountPercent || 0) / 100;
-    return Math.round(mine.total * discountMult + extra);
+    return roundMoney(mine.total * discountMult + extra);
   })();
   const iPaid = user ? paidUserIds.has(user.id) : false;
 
@@ -1056,7 +1068,7 @@ export default function OrderPage({
                               </div>
                               <div className="space-y-1">
                                 <Label htmlFor="price" className="text-xs">
-                                  Цена, ₽
+                                  Цена, {unit}
                                 </Label>
                                 <Input
                                   id="price"
@@ -1105,7 +1117,7 @@ export default function OrderPage({
                             />
                           </div>
                           <div className="space-y-2">
-                            <Label htmlFor="price">Цена, ₽</Label>
+                            <Label htmlFor="price">Цена, {unit}</Label>
                             <Input
                               id="price"
                               type="number"
@@ -1251,7 +1263,7 @@ export default function OrderPage({
                     <div className="space-y-4 py-4">
                       <div className="space-y-2">
                         <Label htmlFor="deliveryFee">
-                          Стоимость доставки, ₽
+                          Стоимость доставки, {unit}
                         </Label>
                         <Input
                           id="deliveryFee"
@@ -1263,7 +1275,7 @@ export default function OrderPage({
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="serviceFee">Сервисный сбор, ₽</Label>
+                        <Label htmlFor="serviceFee">Сервисный сбор, {unit}</Label>
                         <Input
                           id="serviceFee"
                           type="number"
@@ -1293,7 +1305,7 @@ export default function OrderPage({
                             Доп. расходы на{"\u00A0"}человека:{" "}
                             <strong>
                               {fmtPrice(
-                                Math.round(
+                                roundMoney(
                                   ((Number(deliveryFee) || 0) +
                                     (Number(serviceFee) || 0)) /
                                     uniqueUsers
@@ -1363,9 +1375,7 @@ export default function OrderPage({
                           uniqueUsers;
                         const discountMult =
                           1 - (session.discountPercent || 0) / 100;
-                        const finalTotal = Math.round(
-                          total * discountMult + extra
-                        );
+                        const finalTotal = roundMoney(total * discountMult + extra);
                         const hasPaid = paidUserIds.has(userId);
 
                         return (

@@ -94,8 +94,13 @@ export interface PayTarget {
  */
 export function payTarget(
   recipient: { phoneNumber: string | null; payBank: string | null; payLink: string | null },
-  amount: number
+  amount: number,
+  currency: string = "RUB"
 ): PayTarget | null {
+  // These links open a Russian bank and transfer roubles. Offering one for a
+  // dirham bill would send the right number in the wrong currency.
+  if (currency !== "RUB") return null;
+
   // A saved personal link wins: it is the only kind that can carry an amount
   if (recipient.payLink && /^https:\/\//.test(recipient.payLink)) {
     return { url: recipient.payLink, title: `Перевести ${Math.round(amount)} ₽` };

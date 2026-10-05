@@ -39,8 +39,10 @@ model OrderSession {
   placeOptions    Json? // other branches to choose from: [{slug,name,address}]
   status          String      @default("OPEN")
   deadlineAt      DateTime? // orders are collected until this moment
-  deliveryFee     Int         @default(0)
-  serviceFee      Int         @default(0)
+  deliveryFee     Decimal     @default(0) @db.Decimal(10, 2)
+  serviceFee      Decimal     @default(0) @db.Decimal(10, 2)
+  // Prices are kept in the currency the delivery service charges in
+  currency        String      @default("RUB")
   discountPercent Int         @default(0)
   adminId         BigInt
   admin           User        @relation("AdminRelation", fields: [adminId], references: [id])
@@ -71,7 +73,7 @@ model PaymentReminder {
   session   OrderSession @relation(fields: [sessionId], references: [id])
   userId    BigInt
   user      User         @relation(fields: [userId], references: [id])
-  amount    Int
+  amount    Decimal      @db.Decimal(10, 2)
   nextAt    DateTime // when to send the next nudge
   sentCount Int          @default(0)
   doneAt    DateTime? // set when the user finally taps "I paid"
@@ -88,7 +90,7 @@ model MenuItem {
   category    String
   categoryOrder Int      @default(0) // Yandex's own category order
   name        String
-  price       Int
+  price       Decimal      @db.Decimal(10, 2)
   description String?
   weight      String?
   imageUrl    String?
@@ -102,7 +104,7 @@ model OrderItem {
   userId    BigInt
   user      User         @relation(fields: [userId], references: [id])
   dishName  String
-  price     Int
+  price     Decimal      @db.Decimal(10, 2)
   options   String? // chosen options, human-readable ("Соус: Сырный · Напиток: Кола")
 }
 

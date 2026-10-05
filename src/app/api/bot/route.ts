@@ -7,6 +7,11 @@ import { startReminderTicker, stopReminders } from "@/lib/reminders";
 import { Prisma } from "@prisma/client";
 import { BANK_CODES } from "@/lib/telegram";
 import {
+  detectProvider,
+  findSupportedLink,
+  type Provider,
+} from "@/lib/providers";
+import {
   parseSlug,
   fetchMenu,
   fetchPlaceInfo,
@@ -309,15 +314,16 @@ bot.command("order", async (ctx) => {
   const tgUser = ctx.from;
   if (!tgUser) return;
 
-  const edaRegex = /https?:\/\/eda\.yandex\.ru\S*/i;
-  const match = text.match(edaRegex);
+  const link = findSupportedLink(text);
 
-  if (!match) {
-    await ctx.reply("Использование: /order https://eda.yandex.ru/...");
+  if (!link) {
+    await ctx.reply(
+      "Использование: /order <ссылка на ресторан>\n\nПоддерживаю Яндекс Еду и Deliveroo (ОАЭ)."
+    );
     return;
   }
 
-  await handleEdaLink(ctx, tgUser, match[0]);
+  await handleEdaLink(ctx, tgUser, link.url);
 });
 
 // Handle links to Yandex Eda (works in DMs always, in groups only with Privacy OFF)
@@ -347,20 +353,19 @@ bot.on("message:text", async (ctx) => {
     return;
   }
 
-  // Check if the message contains a Yandex Eda link
-  const edaRegex = /https?:\/\/eda\.yandex\.ru\S*/i;
-  const match = text.match(edaRegex);
+  // Any restaurant link we know how to read
+  const link = findSupportedLink(text);
 
-  if (!match) {
+  if (!link) {
     // In groups — silently ignore messages without links
     if (isGroup) return;
     await ctx.reply(
-      "Отправь мне ссылку на ресторан с eda.yandex.ru, чтобы начать сбор заказов.\n\nВ\u00A0группе используй команду:\n/order <ссылка>"
+      "Пришли ссылку на ресторан, чтобы начать сбор заказов.\n\nПонимаю Яндекс Еду и\u00A0Deliveroo (ОАЭ).\n\nВ\u00A0группе используй команду:\n/order <ссылка>"
     );
     return;
   }
 
-  await handleEdaLink(ctx, tgUser, match[0]);
+  await handleEdaLink(ctx, tgUser, link.url);
 });
 
 // Shared logic for processing Yandex Eda links
@@ -395,8 +400,12 @@ async function handleEdaLink(
   // People who order but never signed in on the site have no avatar stored
   await refreshAvatar(tgUser.id);
 
-  // Check if user has phone number
-  if (!user.phoneNumber) {
+  // The phone number only serves SBP transfers, which exist for roubles.
+  // Orders charged in another currency must not be blocked by it.
+  const needsPhone =
+    (detectProvider(restaurantUrl)?.currency ?? "RUB") === "RUB";
+
+  if (!user.phoneNumber && needsPhone) {
     // Save URL and ask for contact
     pendingUrls.set(tgUser.id, restaurantUrl);
 
@@ -436,13 +445,11 @@ async function countMenu(slug: string, sourceUrl?: string): Promise<number> {
   }
 }
 
-/** Store a freshly parsed menu for a session, replacing whatever was there. */
-async function storeMenu(
+/** Replace a session's menu. An empty parse changes nothing. */
+async function writeMenuItems(
   sessionId: string,
-  slug: string,
-  sourceUrl?: string
+  menuItems: Awaited<ReturnType<Provider["fetchMenu"]>>["items"]
 ): Promise<number> {
-  const menuItems = await fetchMenu(slug, 1, true, sourceUrl);
   if (menuItems.length === 0) return 0;
 
   await prisma.menuItem.deleteMany({ where: { sessionId } });
@@ -464,6 +471,15 @@ async function storeMenu(
   return menuItems.length;
 }
 
+/** Yandex Eda menu by branch slug. */
+async function storeMenu(
+  sessionId: string,
+  slug: string,
+  sourceUrl?: string
+): Promise<number> {
+  return writeMenuItems(sessionId, await fetchMenu(slug, 1, true, sourceUrl));
+}
+
 function placeLabel(place: BrandPlace): string {
   return place.address
     ? place.address.replace(/^Москва,\s*/, "")
@@ -471,12 +487,17 @@ function placeLabel(place: BrandPlace): string {
 }
 
 /** Keyboard: order link + one button per alternative branch. */
-const MSK_OFFSET = "+03:00"; // Moscow has no DST
+/** Neither Moscow nor Dubai observes DST, so a fixed offset is safe. */
+const ZONE_OFFSET: Record<string, string> = {
+  "Europe/Moscow": "+03:00",
+  "Asia/Dubai": "+04:00",
+};
+const DEFAULT_ZONE = "Europe/Moscow";
 
-/** Current wall clock in Moscow, as {date: "YYYY-MM-DD", minutes: since midnight}. */
-function moscowNow(): { date: string; minutes: number } {
+/** Wall clock in a zone, as {date: "YYYY-MM-DD", minutes since midnight}. */
+function zoneNow(timeZone: string): { date: string; minutes: number } {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Moscow",
+    timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -493,8 +514,8 @@ function moscowNow(): { date: string; minutes: number } {
 }
 
 /** The next few half-hour marks (11:30, 12:00, …), skipping one that's too close. */
-function nextTimeSlots(count: number = 4): string[] {
-  const { minutes } = moscowNow();
+function nextTimeSlots(timeZone: string, count: number = 4): string[] {
+  const { minutes } = zoneNow(timeZone);
   let slot = Math.ceil((minutes + 5) / 30) * 30; // at least 5 minutes away
   const slots: string[] = [];
   for (let i = 0; i < count; i++, slot += 30) {
@@ -509,19 +530,22 @@ function prettySlot(hhmm: string): string {
   return `${hhmm.slice(0, 2)}:${hhmm.slice(2)}`;
 }
 
-/** "1230" → a Date today in Moscow (tomorrow if that time already passed). */
-function deadlineFromSlot(hhmm: string): Date {
-  const { date, minutes } = moscowNow();
+/** "1230" → that time today in the order's zone (tomorrow if it already passed). */
+function deadlineFromSlot(hhmm: string, timeZone: string): Date {
+  const { date, minutes } = zoneNow(timeZone);
   const slotMinutes = Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(2));
   const at = new Date(
-    `${date}T${prettySlot(hhmm)}:00${MSK_OFFSET}`
+    `${date}T${prettySlot(hhmm)}:00${ZONE_OFFSET[timeZone] ?? ZONE_OFFSET[DEFAULT_ZONE]}`
   );
   if (slotMinutes <= minutes) at.setDate(at.getDate() + 1);
   return at;
 }
 
-function deadlineRows(sessionId: string): InlineKeyboardButton[][] {
-  const buttons: InlineKeyboardButton[] = nextTimeSlots().map((hhmm) => ({
+function deadlineRows(
+  sessionId: string,
+  timeZone: string
+): InlineKeyboardButton[][] {
+  const buttons: InlineKeyboardButton[] = nextTimeSlots(timeZone).map((hhmm) => ({
     text: prettySlot(hhmm),
     callback_data: `until:${sessionId}:${hhmm}`,
   }));
@@ -532,11 +556,11 @@ function deadlineRows(sessionId: string): InlineKeyboardButton[][] {
   return [buttons];
 }
 
-function formatDeadline(deadline: Date): string {
+function formatDeadline(deadline: Date, timeZone: string): string {
   return new Intl.DateTimeFormat("ru-RU", {
     hour: "2-digit",
     minute: "2-digit",
-    timeZone: "Europe/Moscow",
+    timeZone,
   }).format(deadline);
 }
 
@@ -545,12 +569,13 @@ function orderKeyboard(
   places: BrandPlace[],
   currentSlug: string | null,
   menuMissing: boolean = false,
-  askDeadline: boolean = false
+  askDeadline: boolean = false,
+  timeZone: string = DEFAULT_ZONE
 ) {
   // The order link lives in the message text, so no link button here
   const rows: InlineKeyboardButton[][] = [];
 
-  if (askDeadline) rows.push(...deadlineRows(sessionId));
+  if (askDeadline) rows.push(...deadlineRows(sessionId, timeZone));
 
   if (menuMissing) {
     rows.push([
@@ -573,6 +598,78 @@ function orderKeyboard(
   return { inline_keyboard: rows };
 }
 
+/**
+ * Create an order from any non-Yandex service.
+ *
+ * These links point at one venue, so there is no branch picking: fetch the
+ * menu, store it with the service's currency, and ask for a deadline in the
+ * service's own time zone.
+ */
+async function createOrderViaProvider(
+  ctx: { reply: typeof bot.api.sendMessage extends (chatId: infer _C, ...args: infer A) => infer R ? (...args: A) => R : never },
+  tgUser: { id: number; first_name: string },
+  restaurantUrl: string,
+  provider: Provider
+) {
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+
+  let menu: Awaited<ReturnType<Provider["fetchMenu"]>> = { items: [] };
+  try {
+    menu = await provider.fetchMenu(restaurantUrl);
+  } catch (err) {
+    console.error(`${provider.title}: не удалось прочитать меню`, err);
+  }
+
+  const session = await prisma.orderSession.create({
+    data: {
+      url: restaurantUrl,
+      adminId: BigInt(tgUser.id),
+      currency: provider.currency,
+      // Services that publish their delivery fee prefill it for the admin
+      deliveryFee: menu.deliveryFee ?? 0,
+      placeSlug: provider.placeKey(restaurantUrl),
+      placeName: menu.placeName || null,
+      placeAddress: menu.placeAddress || null,
+    },
+  });
+
+  await writeMenuItems(session.id, menu.items);
+
+  const orderUrl = `${baseUrl}/order/${session.id}`;
+  const name = menu.placeName || provider.title;
+  const where = menu.placeAddress
+    ? menu.placeAddress.includes(":")
+      ? `\n\n<b>${menu.placeAddress}</b>`
+      : `\n\nФилиал: <b>${menu.placeAddress}</b>`
+    : "";
+  const fee =
+    menu.deliveryFee != null
+      ? `\n\nДоставка по\u00A0данным ${provider.title}: ${menu.deliveryFee} ${provider.currency}` +
+        (menu.minimumOrder != null ? `, минимальный заказ ${menu.minimumOrder} ${provider.currency}` : "")
+      : "";
+
+  const mainLine =
+    menu.items.length > 0
+      ? `Заказываем из <a href="${restaurantUrl}">${name}</a>, ${menu.items.length} ${pluralizeDishes(menu.items.length)} на\u00A0выбор`
+      : `Заказываем из <a href="${restaurantUrl}">${name}</a>\n\nМеню не\u00A0удалось загрузить — позиции можно добавить вручную`;
+
+  await ctx.reply(
+    `[${pickRandom(OBED_PHRASES)}]\n\n${mainLine}${where}${fee}\n\nСсылка для заказа: ${orderUrl}\n\nУкажи, до\u00A0скольки принимаем заказы:`,
+    {
+      parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
+      reply_markup: orderKeyboard(
+        session.id,
+        [],
+        null,
+        menu.items.length === 0,
+        true,
+        provider.timeZone
+      ),
+    }
+  );
+}
+
 // Helper to create order and send link
 async function createOrder(
   ctx: { reply: typeof bot.api.sendMessage extends (chatId: infer _C, ...args: infer A) => infer R ? (...args: A) => R : never },
@@ -580,6 +677,15 @@ async function createOrder(
   restaurantUrl: string
 ) {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+  const provider = detectProvider(restaurantUrl);
+
+  // Services other than Yandex Eda take the simple path: one venue, one menu.
+  // Yandex keeps its branch picking below, untouched.
+  if (provider && provider.id !== "yandex") {
+    await createOrderViaProvider(ctx, tgUser, restaurantUrl, provider);
+    return;
+  }
+
   const slug = parseSlug(restaurantUrl);
 
   // Brand links (/{city}/r/{brand}) can cover several branches with different
@@ -689,7 +795,8 @@ async function createOrder(
         places,
         menuSlug,
         menuCount === 0,
-        true
+        true,
+        "Europe/Moscow"
       ),
     }
   );
@@ -703,7 +810,7 @@ bot.callbackQuery(/^until:([^:]+):(\d{3,4}|none)$/, async (ctx) => {
   try {
     const session = await prisma.orderSession.findUnique({
       where: { id: sessionId },
-      select: { id: true, adminId: true, status: true },
+      select: { id: true, adminId: true, status: true, url: true },
     });
     if (!session) {
       await ctx.answerCallbackQuery({ text: "Заказ не найден 🤷" });
@@ -720,8 +827,12 @@ bot.callbackQuery(/^until:([^:]+):(\d{3,4}|none)$/, async (ctx) => {
       return;
     }
 
+    // A Dubai link schedules in Dubai time, a Moscow one in Moscow time
+    const timeZone = detectProvider(session.url)?.timeZone ?? DEFAULT_ZONE;
     const deadlineAt =
-      choice === "none" ? null : deadlineFromSlot(choice.padStart(4, "0"));
+      choice === "none"
+        ? null
+        : deadlineFromSlot(choice.padStart(4, "0"), timeZone);
 
     await prisma.orderSession.update({
       where: { id: sessionId },
@@ -730,7 +841,7 @@ bot.callbackQuery(/^until:([^:]+):(\d{3,4}|none)$/, async (ctx) => {
 
     await ctx.answerCallbackQuery({
       text: deadlineAt
-        ? `Принимаем заказы до ${formatDeadline(deadlineAt)}`
+        ? `Принимаем заказы до ${formatDeadline(deadlineAt, timeZone)}`
         : "Без ограничения по времени",
     });
 
@@ -748,7 +859,7 @@ bot.callbackQuery(/^until:([^:]+):(\d{3,4}|none)$/, async (ctx) => {
         await ctx.editMessageText(
           `${withoutAsk.trimEnd()}\n\n${
             deadlineAt
-              ? `⏳ Заказы принимаем до <b>${formatDeadline(deadlineAt)}</b>`
+              ? `⏳ Заказы принимаем до <b>${formatDeadline(deadlineAt, timeZone)}</b>`
               : "⏳ Время не\u00A0ограничено"
           }`,
           {
@@ -777,21 +888,30 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
   try {
     const session = await prisma.orderSession.findUnique({
       where: { id: sessionId },
-      select: { id: true, url: true, placeSlug: true, placeOptions: true },
+      select: { id: true, url: true, placeSlug: true, placeOptions: true, placeName: true },
     });
     if (!session) {
       await ctx.answerCallbackQuery({ text: "Заказ не найден 🤷" });
       return;
     }
 
+    const provider = detectProvider(session.url);
     const slug = session.placeSlug || parseSlug(session.url);
-    if (!slug) {
+    if (!slug && !provider) {
       await ctx.answerCallbackQuery({ text: "Не разобрал ссылку на ресторан" });
       return;
     }
 
     await ctx.answerCallbackQuery({ text: "Пробую загрузить меню…" });
-    const menuCount = await storeMenu(sessionId, slug, session.url);
+    // Ask the service this link belongs to — the Yandex parser knows nothing
+    // about Deliveroo or Talabat pages.
+    const menuCount =
+      provider && provider.id !== "yandex"
+        ? await writeMenuItems(
+            sessionId,
+            (await provider.fetchMenu(session.url)).items
+          )
+        : await storeMenu(sessionId, slug!, session.url);
 
     if (menuCount === 0) {
       await ctx.answerCallbackQuery({
@@ -803,7 +923,7 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
     const places = (session.placeOptions as BrandPlace[] | null) || [];
     try {
       await ctx.editMessageText(
-        `[${pickRandom(OBED_PHRASES)}]\n\nЗаказываем из <a href="${session.url}">ресторана</a>, ${menuCount} шикарных ${pluralizeDishes(menuCount)} на выбор` +
+        `[${pickRandom(OBED_PHRASES)}]\n\nЗаказываем из <a href="${session.url}">${session.placeName ?? "ресторана"}</a>, ${menuCount} ${pluralizeDishes(menuCount)} на выбор` +
           `\n\nСсылка для заказа: ${baseUrl}/order/${sessionId}`,
         {
           parse_mode: "HTML",

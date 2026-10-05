@@ -3,15 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { getBot } from "@/lib/bot";
 import { paymentDetails, payTarget } from "@/lib/telegram";
+import { detectProvider } from "@/lib/providers";
+import { money, roundIn, formatMoney } from "@/lib/money";
 import { scheduleFirstReminder } from "@/lib/reminders";
-
-// Format number with thin space thousands separator and before ₽
-function fmtPrice(n: number): string {
-  const formatted = Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, "\u2009");
-  return `${formatted}\u2009₽`;
-}
 
 // POST /api/orders/[id]/finalize - Admin finalizes order with delivery/service fees
 export async function POST(
@@ -60,9 +54,20 @@ export async function POST(
       );
     }
 
+    const currency = orderSession.currency;
+    // Name the service that actually took the fee
+    const provider = detectProvider(orderSession.url);
+    // Keep the old joke for Yandex orders; name the service for the rest
+    const serviceFeeLine =
+      !provider || provider.id === "yandex"
+        ? "монополисту Яндексу"
+        : `сервису ${provider.title}`;
+    const fmt = (value: number) => formatMoney(value, currency);
+    const round = (value: number) => roundIn(value, currency);
+
     const body = await req.json();
-    const deliveryFee = Math.round(Number(body.deliveryFee) || 0);
-    const serviceFee = Math.round(Number(body.serviceFee) || 0);
+    const deliveryFee = round(Number(body.deliveryFee) || 0);
+    const serviceFee = round(Number(body.serviceFee) || 0);
     const discountPercent = Math.min(
       100,
       Math.max(0, Math.round(Number(body.discountPercent) || 0))
@@ -95,16 +100,16 @@ export async function POST(
       const dish = {
         name: item.dishName,
         options: item.options,
-        price: item.price,
+        price: money(item.price),
       };
       const existing = userTotals.get(key);
       if (existing) {
-        existing.total += item.price;
+        existing.total += money(item.price);
         existing.dishes.push(dish);
       } else {
         userTotals.set(key, {
           userId: item.userId,
-          total: item.price,
+          total: money(item.price),
           firstName: item.user.firstName,
           dishes: [dish],
         });
@@ -130,7 +135,7 @@ export async function POST(
 
     for (const [userId, data] of userTotals) {
       const foodDiscounted = data.total * discountMultiplier;
-      const total = Math.round(foodDiscounted + extraPerPerson);
+      const total = round(foodDiscounted + extraPerPerson);
       results.push({
         userId,
         firstName: data.firstName,
@@ -146,11 +151,11 @@ export async function POST(
             .filter(([uid]) => uid !== session.userId);
 
           const lines = others.map(([, d]) => {
-            const t = Math.round(d.total * discountMultiplier + extraPerPerson);
-            return `  ${d.firstName}\u00A0— ${fmtPrice(t)}`;
+            const t = round(d.total * discountMultiplier + extraPerPerson);
+            return `  ${d.firstName}\u00A0— ${fmt(t)}`;
           });
 
-          const totalToReceive = Math.round(
+          const totalToReceive = round(
             others.reduce(
               (s, [, d]) => s + d.total * discountMultiplier + extraPerPerson,
               0
@@ -164,14 +169,14 @@ export async function POST(
 
           const summaryText =
             lines.length > 0
-              ? `Обед заказан! Ждём переводов:\n\n${lines.join("\n")}${discountLine}\n\nВсего к\u00A0получению: ${fmtPrice(totalToReceive)}`
+              ? `Обед заказан! Ждём переводов:\n\n${lines.join("\n")}${discountLine}\n\nВсего к\u00A0получению: ${fmt(totalToReceive)}`
               : "Обед заказан! Ты был единственным участником.";
 
           await bot.api.sendMessage(Number(userId), summaryText);
           notifiedCount++;
         } else {
-          const foodPrice = Math.round(foodDiscounted);
-          const extra = Math.round(extraPerPerson);
+          const foodPrice = round(foodDiscounted);
+          const extra = round(extraPerPerson);
           const discountNote =
             discountPercent > 0
               ? ` Еда уже со скидкой ${discountPercent}%.`
@@ -181,20 +186,25 @@ export async function POST(
           const dishLines = data.dishes
             .map((dish) => {
               const options = dish.options ? ` ${dish.options}.` : "";
-              return `— ${dish.name}.${options} ${fmtPrice(dish.price)}`;
+              return `— ${dish.name}.${options} ${fmt(dish.price)}`;
             })
             .join("\n");
 
           // Phone and amount as tappable copy targets — Telegram copies a
           // <code> block on tap, which works in every bank app.
-          const details = paymentDetails(adminPhone, total);
+          // SBP transfers by phone exist for roubles only; elsewhere we just
+          // make the amount easy to copy and let people settle it their way.
+          const details = currency === "RUB" ? paymentDetails(adminPhone, total) : null;
           const requisites = details
             ? `\n\nПеревести <code>${details.amount}</code>\u00A0₽ по\u00A0номеру <code>+${details.phone}</code>` +
               `\n<i>Нажми на\u00A0номер или\u00A0сумму, чтобы скопировать</i>`
-            : "\n\nНомер для перевода не\u00A0указан — спроси у\u00A0заказавшего.";
+            : currency === "RUB"
+              ? "\n\nНомер для перевода не\u00A0указан — спроси у\u00A0заказавшего."
+              : `\n\nК\u00A0переводу <code>${roundIn(total, currency)}</code> ${currency}` +
+                `\n<i>Нажми на\u00A0сумму, чтобы скопировать</i>`;
 
           // A one-tap link exists only if the recipient told us their bank
-          const target = payTarget(orderSession.admin, total);
+          const target = payTarget(orderSession.admin, total, currency);
           const buttons = [
             ...(target ? [[{ text: target.title, url: target.url }]] : []),
             [{ text: "✅ Я перевёл", callback_data: `paid:${id}` }],
@@ -202,8 +212,8 @@ export async function POST(
 
           await bot.api.sendMessage(
             Number(userId),
-            `Обед заказан. С\u00A0тебя ${fmtPrice(total)}. ` +
-              `${fmtPrice(foodPrice)} за\u00A0еду и\u00A0${fmtPrice(extra)} монополисту Яндексу.${discountNote}` +
+            `Обед заказан. С\u00A0тебя ${fmt(total)}. ` +
+              `${fmt(foodPrice)} за\u00A0еду и\u00A0${fmt(extra)} ${serviceFeeLine}.${discountNote}` +
               `\n\n${dishLines}` +
               requisites,
             {
@@ -226,7 +236,7 @@ export async function POST(
     return NextResponse.json({
       ok: true,
       results,
-      extraPerPerson: Math.round(extraPerPerson),
+      extraPerPerson: round(extraPerPerson),
       notifiedCount,
       failedCount,
     });

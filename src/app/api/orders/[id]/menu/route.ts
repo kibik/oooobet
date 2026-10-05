@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { parseSlug, fetchMenu, fetchPlaceInfo } from "@/lib/yandex-eda";
+import { money } from "@/lib/money";
 
 // When we last tried to (re)load a session's menu in this process. Menus cached
 // before ingredients parsing have no descriptions, and a menu can be missing
@@ -41,7 +42,7 @@ async function backfillMenu(sessionId: string): Promise<void> {
         category: item.category,
         categoryOrder: item.categoryOrder,
         name: item.name,
-        price: item.price,
+        price: money(item.price),
         description: item.description,
         weight: item.weight,
         imageUrl: item.imageUrl,
@@ -162,7 +163,7 @@ export async function GET(
       categories[item.category].push({
         id: item.id,
         name: item.name,
-        price: item.price,
+        price: money(item.price),
         description: item.description,
         weight: item.weight,
         imageUrl: item.imageUrl,

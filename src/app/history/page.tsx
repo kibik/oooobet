@@ -2,19 +2,12 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { parseSlug } from "@/lib/yandex-eda";
 import { initial } from "@/lib/utils";
+import { money, roundMoney, formatMoney } from "@/lib/money";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 
 export const dynamic = "force-dynamic";
-
-// Format number with thin space thousands separator and before ₽
-function fmtPrice(n: number): string {
-  const formatted = Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  return `${formatted} ₽`;
-}
 
 function pluralizeDishes(n: number): string {
   const mod10 = n % 10;
@@ -100,24 +93,60 @@ export default async function HistoryPage() {
   });
 
   // --- Who ate how much: totals across every order (dish prices, discount applied) ---
-  const eaters = new Map<string, EaterStats & { sessionIds: Set<string> }>();
-  const dishCounts = new Map<string, number>();
-  let allDishes = 0;
-  let allFood = 0;
-  let allExtras = 0;
+  type Stats = {
+    currency: string;
+    orders: number;
+    dishes: number;
+    food: number;
+    extras: number;
+    ranking: EaterStats[];
+    topDishes: Array<[string, number]>;
+  };
+
+  // Money from different currencies cannot be summed, so each currency gets its
+  // own set of numbers and its own leaderboard.
+  const byCurrency = new Map<
+    string,
+    {
+      eaters: Map<string, EaterStats & { sessionIds: Set<string> }>;
+      dishCounts: Map<string, number>;
+      dishes: number;
+      food: number;
+      extras: number;
+      sessionIds: Set<string>;
+    }
+  >();
 
   for (const s of sessions) {
+    const currency = s.currency || "RUB";
+    let bucket = byCurrency.get(currency);
+    if (!bucket) {
+      bucket = {
+        eaters: new Map(),
+        dishCounts: new Map(),
+        dishes: 0,
+        food: 0,
+        extras: 0,
+        sessionIds: new Set(),
+      };
+      byCurrency.set(currency, bucket);
+    }
+
     const discountMult = 1 - (s.discountPercent || 0) / 100;
-    allExtras += s.deliveryFee + s.serviceFee;
+    bucket.extras += money(s.deliveryFee) + money(s.serviceFee);
+    bucket.sessionIds.add(s.id);
 
     for (const item of s.items) {
       const key = item.userId.toString();
-      const spent = item.price * discountMult;
-      allDishes++;
-      allFood += spent;
-      dishCounts.set(item.dishName, (dishCounts.get(item.dishName) || 0) + 1);
+      const spent = money(item.price) * discountMult;
+      bucket.dishes++;
+      bucket.food += spent;
+      bucket.dishCounts.set(
+        item.dishName,
+        (bucket.dishCounts.get(item.dishName) || 0) + 1
+      );
 
-      let row = eaters.get(key);
+      let row = bucket.eaters.get(key);
       if (!row) {
         row = {
           userId: key,
@@ -132,7 +161,7 @@ export default async function HistoryPage() {
           orders: 0,
           sessionIds: new Set<string>(),
         };
-        eaters.set(key, row);
+        bucket.eaters.set(key, row);
       }
       row.spent += spent;
       row.dishes++;
@@ -140,15 +169,22 @@ export default async function HistoryPage() {
     }
   }
 
-  const ranking: EaterStats[] = [...eaters.values()]
-    .map((r) => ({ ...r, orders: r.sessionIds.size }))
-    .sort((a, b) => b.spent - a.spent);
-
-  const maxSpent = ranking[0]?.spent || 1;
-  const topDishes = [...dishCounts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, 10);
-  const maxDishCount = topDishes[0]?.[1] || 1;
+  // Busiest currency first — that is the one people are ordering in now
+  const stats: Stats[] = [...byCurrency.entries()]
+    .map(([currency, b]) => ({
+      currency,
+      orders: b.sessionIds.size,
+      dishes: b.dishes,
+      food: b.food,
+      extras: b.extras,
+      ranking: [...b.eaters.values()]
+        .map((r) => ({ ...r, orders: r.sessionIds.size }))
+        .sort((a, b2) => b2.spent - a.spent),
+      topDishes: [...b.dishCounts.entries()]
+        .sort((a, b2) => b2[1] - a[1] || a[0].localeCompare(b2[0]))
+        .slice(0, 10),
+    }))
+    .sort((a, b) => b.orders - a.orders);
 
   return (
     <div className="min-h-screen">
@@ -163,36 +199,42 @@ export default async function HistoryPage() {
           <Separator />
         </div>
 
-        {/* ===== INFOGRAPHIC: who ate how much ===== */}
-        {ranking.length > 0 && (
-          <Card className="viz-root">
+        {/* ===== INFOGRAPHIC: who ate how much (per currency) ===== */}
+        {stats.map((stat) => (
+          <Card className="viz-root" key={stat.currency}>
             <CardContent className="py-5 space-y-5">
+              {stats.length > 1 && (
+                <div className="text-xs text-muted-foreground">
+                  Заказы в {stat.currency === "RUB" ? "рублях" : stat.currency}
+                </div>
+              )}
+
               {/* KPI row */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-3">
                 <div>
                   <div className="text-xs text-muted-foreground">Наели всего</div>
                   <div className="text-xl font-semibold tabular-nums leading-tight">
-                    {fmtPrice(allFood)}
+                    {formatMoney(stat.food, stat.currency)}
                   </div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">
-                    Яндексу отдали
+                    Доставка и сборы
                   </div>
                   <div className="text-xl font-semibold tabular-nums leading-tight">
-                    {fmtPrice(allExtras)}
+                    {formatMoney(stat.extras, stat.currency)}
                   </div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">Блюд съедено</div>
                   <div className="text-xl font-semibold tabular-nums leading-tight">
-                    {allDishes}
+                    {stat.dishes}
                   </div>
                 </div>
                 <div>
                   <div className="text-xs text-muted-foreground">Средний чек</div>
                   <div className="text-xl font-semibold tabular-nums leading-tight">
-                    {fmtPrice(allFood / Math.max(1, allDishes))}
+                    {formatMoney(stat.food / Math.max(1, stat.dishes), stat.currency)}
                   </div>
                 </div>
               </div>
@@ -208,11 +250,11 @@ export default async function HistoryPage() {
               </div>
 
               <div className="space-y-3">
-                {ranking.map((r, i) => (
+                {stat.ranking.map((r, i) => (
                   <div
                     key={r.userId}
                     className="space-y-1.5"
-                    title={`${r.name}: ${r.dishes} ${pluralizeDishes(r.dishes)} в ${r.orders} ${pluralizeOrders(r.orders)}, в среднем ${fmtPrice(r.spent / r.dishes)} за блюдо`}
+                    title={`${r.name}: ${r.dishes} ${pluralizeDishes(r.dishes)} в ${r.orders} ${pluralizeOrders(r.orders)}, в среднем ${formatMoney(r.spent / r.dishes, stat.currency)} за блюдо`}
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2 min-w-0">
@@ -237,7 +279,7 @@ export default async function HistoryPage() {
                         </span>
                       </div>
                       <span className="text-sm font-semibold tabular-nums shrink-0">
-                        {fmtPrice(r.spent)}
+                        {formatMoney(r.spent, stat.currency)}
                       </span>
                     </div>
                     {/* Bar: shared baseline for every row, 4px rounded data-end */}
@@ -245,7 +287,7 @@ export default async function HistoryPage() {
                       <div
                         className="h-2.5 rounded-r-[4px] viz-bar"
                         style={{
-                          width: `${Math.max(2, (r.spent / maxSpent) * 100)}%`,
+                          width: `${Math.max(2, (r.spent / (stat.ranking[0]?.spent || 1)) * 100)}%`,
                         }}
                       />
                       <span className="text-xs text-muted-foreground whitespace-nowrap sm:hidden">
@@ -257,7 +299,7 @@ export default async function HistoryPage() {
                 ))}
               </div>
 
-              {topDishes.length > 0 && (
+              {stat.topDishes.length > 0 && (
                 <>
                   <Separator />
                   <div className="space-y-1">
@@ -267,7 +309,7 @@ export default async function HistoryPage() {
                     </p>
                   </div>
                   <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1.5">
-                    {topDishes.map(([dish, count], i) => (
+                    {stat.topDishes.map(([dish, count], i) => (
                       <div
                         key={dish}
                         className="flex items-center gap-2 text-sm"
@@ -277,12 +319,11 @@ export default async function HistoryPage() {
                           {i + 1}
                         </span>
                         <span className="truncate flex-1 min-w-0">{dish}</span>
-                        {/* Fixed-width track keeps one baseline across rows */}
                         <span className="w-10 shrink-0 hidden sm:block">
                           <span
                             className="block h-1.5 rounded-r-[4px] viz-bar"
                             style={{
-                              width: `${Math.max(8, (count / maxDishCount) * 100)}%`,
+                              width: `${Math.max(8, (count / (stat.topDishes[0]?.[1] || 1)) * 100)}%`,
                             }}
                           />
                         </span>
@@ -296,7 +337,7 @@ export default async function HistoryPage() {
               )}
             </CardContent>
           </Card>
-        )}
+        ))}
 
         {sessions.length === 0 ? (
           <Card>
@@ -310,10 +351,10 @@ export default async function HistoryPage() {
           <div className="space-y-3">
             {sessions.map((s) => {
               const slug = parseSlug(s.url);
-              const foodSum = s.items.reduce((sum, i) => sum + i.price, 0);
+              const foodSum = s.items.reduce((sum, i) => sum + money(i.price), 0);
               const discountMult = 1 - (s.discountPercent || 0) / 100;
-              const totalSum = Math.round(
-                foodSum * discountMult + s.deliveryFee + s.serviceFee
+              const totalSum = roundMoney(
+                foodSum * discountMult + money(s.deliveryFee) + money(s.serviceFee)
               );
               const participants = new Set(
                 s.items.map((i) => i.userId.toString())
@@ -366,7 +407,7 @@ export default async function HistoryPage() {
                       </div>
                       {s.items.length > 0 && (
                         <div className="text-sm font-medium tabular-nums">
-                          {fmtPrice(totalSum)}
+                          {formatMoney(totalSum, s.currency)}
                           {s.status === "ORDERED" && (
                             <span className="text-xs text-muted-foreground font-normal">
                               {" "}

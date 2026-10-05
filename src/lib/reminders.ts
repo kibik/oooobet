@@ -12,6 +12,7 @@
 import { prisma } from "@/lib/prisma";
 import { getBot } from "@/lib/bot";
 import { paymentDetails } from "@/lib/telegram";
+import { money, formatMoney } from "@/lib/money";
 
 const FIRST_DELAY_MS = 5 * 60 * 1000;
 const SECOND_DELAY_MS = 15 * 60 * 1000;
@@ -25,13 +26,6 @@ export function delayAfter(sentCount: number): number {
   if (sentCount === 0) return FIRST_DELAY_MS;
   if (sentCount === 1) return SECOND_DELAY_MS;
   return HOURLY_MS;
-}
-
-function fmtPrice(n: number): string {
-  const formatted = Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-  return `${formatted} ₽`;
 }
 
 const NUDGES = [
@@ -75,7 +69,7 @@ export async function sendDueReminders(): Promise<number> {
   const due = await prisma.paymentReminder.findMany({
     where: { doneAt: null, nextAt: { lte: new Date() } },
     include: {
-      session: { select: { id: true, status: true, admin: true } },
+      session: { select: { id: true, status: true, currency: true, admin: true } },
     },
     take: 25,
   });
@@ -112,10 +106,15 @@ export async function sendDueReminders(): Promise<number> {
     }
 
     const nudge = NUDGES[reminder.sentCount % NUDGES.length];
-    const details = paymentDetails(
-      reminder.session.admin.phoneNumber || "",
-      reminder.amount
-    );
+    // Transfers by phone are a rouble thing; quoting one next to a dirham
+    // debt would name the right number in the wrong currency.
+    const details =
+      reminder.session.currency === "RUB"
+        ? paymentDetails(
+            reminder.session.admin.phoneNumber || "",
+            money(reminder.amount)
+          )
+        : null;
     const requisites = details
       ? `\n\n<code>${details.amount}</code> ₽ на <code>+${details.phone}</code>`
       : "";
@@ -123,7 +122,7 @@ export async function sendDueReminders(): Promise<number> {
     try {
       await bot.api.sendMessage(
         Number(reminder.userId),
-        `${nudge}: с тебя ${fmtPrice(reminder.amount)}.${requisites}\n\nЕсли уже перевёл — нажми кнопку, и я перестану напоминать.`,
+        `${nudge}: с тебя ${formatMoney(money(reminder.amount), reminder.session.currency)}.${requisites}\n\nЕсли уже перевёл — нажми кнопку, и я перестану напоминать.`,
         {
           parse_mode: "HTML",
           link_preview_options: { is_disabled: true },

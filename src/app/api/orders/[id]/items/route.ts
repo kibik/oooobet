@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { roundIn } from "@/lib/money";
 
 // POST /api/orders/[id]/items - Add item to order
 export async function POST(
@@ -71,7 +72,8 @@ export async function POST(
         sessionId: id,
         userId: BigInt(session.userId),
         dishName: dishName.trim(),
-        price: Math.round(numPrice),
+        // Dirham prices are fractional; roubles stay whole
+        price: roundIn(numPrice, orderSession.currency),
         options:
           typeof options === "string" && options.trim() !== ""
             ? options.trim().slice(0, 500)
