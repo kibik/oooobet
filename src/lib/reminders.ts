@@ -13,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { getBot } from "@/lib/bot";
 import { paymentDetails } from "@/lib/telegram";
 import { money, formatMoney } from "@/lib/money";
+import { localeFor, translator, NUDGES } from "@/lib/i18n";
 
 const FIRST_DELAY_MS = 5 * 60 * 1000;
 const SECOND_DELAY_MS = 15 * 60 * 1000;
@@ -28,13 +29,6 @@ export function delayAfter(sentCount: number): number {
   return HOURLY_MS;
 }
 
-const NUDGES = [
-  "Напоминаю про обед",
-  "Всё ещё жду перевод",
-  "Обед был вкусный, а долг остался",
-  "Деньги сами себя не переведут",
-  "Тук-тук. Это твой долг за обед",
-];
 
 export async function scheduleFirstReminder(
   sessionId: string,
@@ -105,7 +99,10 @@ export async function sendDueReminders(): Promise<number> {
       continue;
     }
 
-    const nudge = NUDGES[reminder.sentCount % NUDGES.length];
+    const locale = localeFor(reminder.session.currency);
+    const tr = translator(locale);
+    const nudges = NUDGES[locale];
+    const nudge = nudges[reminder.sentCount % nudges.length];
     // Transfers by phone are a rouble thing; quoting one next to a dirham
     // debt would name the right number in the wrong currency.
     const details =
@@ -116,13 +113,21 @@ export async function sendDueReminders(): Promise<number> {
           )
         : null;
     const requisites = details
-      ? `\n\n<code>${details.amount}</code> ₽ на <code>+${details.phone}</code>`
+      ? "\n\n" +
+        tr("botReminderRequisites", {
+          amount: details.amount,
+          phone: details.phone,
+        })
       : "";
 
     try {
       await bot.api.sendMessage(
         Number(reminder.userId),
-        `${nudge}: с тебя ${formatMoney(money(reminder.amount), reminder.session.currency)}.${requisites}\n\nЕсли уже перевёл — нажми кнопку, и я перестану напоминать.`,
+        tr("botReminder", {
+          nudge,
+          amount: formatMoney(money(reminder.amount), reminder.session.currency),
+          requisites,
+        }),
         {
           parse_mode: "HTML",
           link_preview_options: { is_disabled: true },
@@ -130,7 +135,7 @@ export async function sendDueReminders(): Promise<number> {
             inline_keyboard: [
               [
                 {
-                  text: "✅ Я перевёл",
+                  text: tr("botIPaid"),
                   callback_data: `paid:${reminder.sessionId}`,
                 },
               ],

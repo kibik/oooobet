@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { localeFor, translator } from "@/lib/i18n";
 import { roundIn } from "@/lib/money";
 
 // POST /api/orders/[id]/items - Add item to order
@@ -11,10 +12,12 @@ export async function POST(
   try {
     const { id } = await params;
     const session = await getSession();
+    // Until the order is loaded we do not know its language yet
+    let t = translator("ru");
 
     if (!session.userId) {
       return NextResponse.json(
-        { error: "Необходимо авторизоваться" },
+        { error: t("errAuth") },
         { status: 401 }
       );
     }
@@ -23,16 +26,18 @@ export async function POST(
       where: { id },
     });
 
+    t = translator(localeFor(orderSession?.currency));
+
     if (!orderSession) {
       return NextResponse.json(
-        { error: "Сессия заказа не найдена" },
+        { error: t("errSessionMissing") },
         { status: 404 }
       );
     }
 
     if (orderSession.status !== "OPEN") {
       return NextResponse.json(
-        { error: "Сбор заказов уже завершен" },
+        { error: t("errClosed") },
         { status: 400 }
       );
     }
@@ -42,7 +47,7 @@ export async function POST(
 
     if (!dishName || typeof dishName !== "string" || dishName.trim() === "") {
       return NextResponse.json(
-        { error: "Укажите название блюда" },
+        { error: t("errNoDishName") },
         { status: 400 }
       );
     }
@@ -50,7 +55,7 @@ export async function POST(
     const numPrice = Number(price);
     if (!numPrice || numPrice <= 0) {
       return NextResponse.json(
-        { error: "Укажите корректную цену" },
+        { error: t("errBadPrice") },
         { status: 400 }
       );
     }
@@ -62,7 +67,7 @@ export async function POST(
 
     if (!userExists) {
       return NextResponse.json(
-        { error: "Пользователь не найден. Перелогиньтесь." },
+        { error: t("errNoUser") },
         { status: 400 }
       );
     }
@@ -115,6 +120,8 @@ export async function DELETE(
   try {
     const { id } = await params;
     const session = await getSession();
+    // Until the order is loaded we do not know its language yet
+    let t = translator("ru");
 
     if (!session.userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -148,9 +155,11 @@ export async function DELETE(
       where: { id },
     });
 
+    t = translator(localeFor(orderSession?.currency));
+
     if (orderSession?.status !== "OPEN") {
       return NextResponse.json(
-        { error: "Сбор заказов уже завершен" },
+        { error: t("errClosed") },
         { status: 400 }
       );
     }

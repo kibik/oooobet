@@ -28,6 +28,7 @@ import { toast } from "sonner";
 import { getDailyQuote } from "@/lib/quotes";
 import { initial } from "@/lib/utils";
 import { formatMoney, roundIn } from "@/lib/money";
+import { localeFor, translator, dishWord } from "@/lib/i18n";
 import ParticipantStatus, {
   type ParticipantState,
 } from "@/components/ParticipantStatus";
@@ -133,6 +134,11 @@ export default function OrderPage({
   );
   // What to write next to an input: "₽" for roubles, "AED" for dirhams
   const unit = !session?.currency || session.currency === "RUB" ? "₽" : session.currency;
+  // Dubai orders read in English; Russian ones are untouched
+  const t = useMemo(
+    () => translator(localeFor(session?.currency)),
+    [session?.currency]
+  );
   const [loading, setLoading] = useState(true);
 
   // Menu state
@@ -214,7 +220,7 @@ export default function OrderPage({
         }
       }
     } catch {
-      toast.error("Ошибка загрузки заказа");
+      toast.error(t("errLoadOrder"));
     } finally {
       setLoading(false);
     }
@@ -294,14 +300,14 @@ export default function OrderPage({
         }),
       });
       if (res.ok) {
-        toast.success(`${menuItem.name} добавлено`);
+        toast.success(t("addedDish", { name: menuItem.name }));
         fetchOrder();
       } else {
         const data = await res.json();
-        toast.error(data.error || "Ошибка добавления");
+        toast.error(data.error || t("errAdd"));
       }
     } catch {
-      toast.error("Ошибка сети");
+      toast.error(t("errNetwork"));
     }
   };
 
@@ -434,14 +440,14 @@ export default function OrderPage({
       if (res.ok) {
         setDishName("");
         setPrice("");
-        toast.success("Блюдо добавлено");
+        toast.success(t("dishAdded"));
         fetchOrder();
       } else {
         const data = await res.json();
-        toast.error(data.error || "Ошибка добавления");
+        toast.error(data.error || t("errAdd"));
       }
     } catch {
-      toast.error("Ошибка сети");
+      toast.error(t("errNetwork"));
     } finally {
       setAdding(false);
     }
@@ -456,7 +462,7 @@ export default function OrderPage({
       setCopied(what);
       setTimeout(() => setCopied(null), 1500);
     } catch {
-      toast.error("Не получилось скопировать — выдели и скопируй вручную");
+      toast.error(t("errCopy"));
     }
   };
 
@@ -465,14 +471,14 @@ export default function OrderPage({
     try {
       const res = await fetch(`/api/orders/${id}/paid`, { method: "POST" });
       if (res.ok) {
-        toast.success("Отметил перевод. Напоминания больше не придут");
+        toast.success(t("paidNoted"));
         fetchOrder();
       } else {
         const data = await res.json().catch(() => ({}));
-        toast.error(data.error || "Не получилось");
+        toast.error(data.error || t("errGeneric"));
       }
     } catch {
-      toast.error("Ошибка сети");
+      toast.error(t("errNetwork"));
     } finally {
       setMarkingPaid(false);
     }
@@ -488,14 +494,14 @@ export default function OrderPage({
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         toast.success(
-          iAmReady ? "Продолжай выбирать" : "Готово! Ждём остальных 🍽"
+          iAmReady ? t("keepChoosing") : t("readyWaiting")
         );
         fetchOrder();
       } else {
-        toast.error(data.error || "Не получилось");
+        toast.error(data.error || t("errGeneric"));
       }
     } catch {
-      toast.error("Ошибка сети");
+      toast.error(t("errNetwork"));
     } finally {
       setMarkingReady(false);
     }
@@ -507,14 +513,14 @@ export default function OrderPage({
         method: "DELETE",
       });
       if (res.ok) {
-        toast.success("Блюдо удалено");
+        toast.success(t("dishRemoved"));
         fetchOrder();
       } else {
         const data = await res.json();
-        toast.error(data.error || "Ошибка удаления");
+        toast.error(data.error || t("errRemove"));
       }
     } catch {
-      toast.error("Ошибка сети");
+      toast.error(t("errNetwork"));
     }
   };
 
@@ -535,18 +541,18 @@ export default function OrderPage({
         const sent = data.notifiedCount || 0;
         const failed = data.failedCount || 0;
         if (failed > 0) {
-          toast.success(`Заказ оформлен! Уведомлений: ${sent} доставлено, ${failed} не\u00A0удалось.`);
+          toast.success(t("orderPlacedSome", { sent, failed }));
         } else {
-          toast.success(`Заказ оформлен! Уведомления отправлены (${sent}).`);
+          toast.success(t("orderPlaced", { sent }));
         }
         setDialogOpen(false);
         fetchOrder();
       } else {
         const data = await res.json();
-        toast.error(data.error || "Ошибка");
+        toast.error(data.error || t("errShort"));
       }
     } catch {
-      toast.error("Ошибка сети");
+      toast.error(t("errNetwork"));
     } finally {
       setFinalizing(false);
     }
@@ -570,7 +576,11 @@ export default function OrderPage({
     >
   );
 
-  const quote = useMemo(() => getDailyQuote(), []);
+  // The saying under the logo follows the order's language too
+  const quote = useMemo(
+    () => getDailyQuote(localeFor(session?.currency)),
+    [session?.currency]
+  );
 
   const totalSum =
     session?.items.reduce((sum, item) => sum + item.price, 0) || 0;
@@ -647,7 +657,7 @@ export default function OrderPage({
   const msLeft = deadlineMs !== null ? deadlineMs - now : null;
   const countdown = (() => {
     if (msLeft === null) return null;
-    if (msLeft <= 0) return { text: "время вышло", expired: true };
+    if (msLeft <= 0) return { text: t("timeIsUp"), expired: true };
     const totalSec = Math.floor(msLeft / 1000);
     const h = Math.floor(totalSec / 3600);
     const m = Math.floor((totalSec % 3600) / 60);
@@ -686,7 +696,7 @@ export default function OrderPage({
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground text-lg">
-          Загрузка...
+          {t("loading")}
         </div>
       </div>
     );
@@ -697,9 +707,9 @@ export default function OrderPage({
       <div className="min-h-screen flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle>Заказ не найден</CardTitle>
+            <CardTitle>{t("orderNotFound")}</CardTitle>
             <CardDescription>
-              Проверьте ссылку и{"\u00A0"}попробуйте снова.
+              {t("checkTheLink")}
             </CardDescription>
           </CardHeader>
         </Card>
@@ -711,9 +721,9 @@ export default function OrderPage({
     string,
     { text: string; variant: "default" | "secondary" | "destructive" | "outline" }
   > = {
-    OPEN: { text: "Сбор заказов", variant: "default" },
-    ORDERED: { text: "Ожидание оплаты", variant: "secondary" },
-    CLOSED: { text: "Закрыт", variant: "outline" },
+    OPEN: { text: t("statusOpen"), variant: "default" },
+    ORDERED: { text: t("statusOrdered"), variant: "secondary" },
+    CLOSED: { text: t("statusClosed"), variant: "outline" },
   };
 
   const statusInfo = statusLabel[session.status] || {
@@ -763,7 +773,7 @@ export default function OrderPage({
             <div className="flex items-start justify-between gap-x-3 gap-y-1 flex-wrap">
               <div className="space-y-1 min-w-0">
                 <CardTitle className="text-base flex items-center gap-2 flex-wrap">
-                  <span>За{"\u00A0"}всё платит</span>
+                  <span>{t("paidBy")}</span>
                   {(session.admin.avatarUrl ?? session.admin.photoUrl) ? (
                     <img
                       src={session.admin.avatarUrl ?? session.admin.photoUrl ?? ""}
@@ -803,8 +813,8 @@ export default function OrderPage({
                     }`}
                     title={
                       countdown.expired
-                        ? "приём заказов закрыт"
-                        : "до конца сбора заказов"
+                        ? t("deadlinePassed")
+                        : t("untilDeadline")
                     }
                   >
                     {countdown.expired ? "⏳ —" : `⏳ ${countdown.text}`}
@@ -816,7 +826,7 @@ export default function OrderPage({
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              Заказываем из{"\u00A0"}
+              {t("orderingFrom")}
               <a
                 href={session.url}
                 target="_blank"
@@ -851,9 +861,9 @@ export default function OrderPage({
         {!user ? (
           <Card>
             <CardHeader>
-              <CardTitle>Войдите через{"\u00A0"}Telegram</CardTitle>
+              <CardTitle>{t("signInTitle")}</CardTitle>
               <CardDescription>
-                Чтобы добавить свои блюда, нужно{"\u00A0"}авторизоваться.
+                {t("signInText")}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -874,7 +884,7 @@ export default function OrderPage({
                   <Card>
                     <CardContent className="py-8">
                       <div className="animate-pulse text-muted-foreground text-sm text-center">
-                        Загрузка меню...
+                        {t("menuLoading")}
                       </div>
                     </CardContent>
                   </Card>
@@ -883,7 +893,7 @@ export default function OrderPage({
                     <CardContent className="space-y-4 pt-6">
                       {/* Search */}
                       <Input
-                        placeholder="Поиск по меню..."
+                        placeholder={t("menuSearch")}
                         value={menuSearch}
                         onChange={(e) => setMenuSearch(e.target.value)}
                         className="h-9"
@@ -956,7 +966,7 @@ export default function OrderPage({
                                     <span className="text-xs text-muted-foreground">
                                       {menuItem.weight}
                                       {menuItem.weight && withOptions && " · "}
-                                      {withOptions && "есть опции"}
+                                      {withOptions && t("hasOptions")}
                                     </span>
                                   )}
                                   <div className="font-semibold text-sm mt-0.5">
@@ -1008,7 +1018,7 @@ export default function OrderPage({
                                         handleWantThis(menuItem, e)
                                       }
                                     >
-                                      Хочу это! 🤤
+                                      {t("wantThis")}
                                     </Button>
                                   )}
                                 </div>
@@ -1017,7 +1027,7 @@ export default function OrderPage({
                           })
                         ) : (
                           <p className="text-muted-foreground text-sm text-center py-4">
-                            Ничего не{"\u00A0"}найдено
+                            {t("nothingFound")}
                           </p>
                         )}
                       </div>
@@ -1033,10 +1043,10 @@ export default function OrderPage({
                           onClick={handleToggleReady}
                         >
                           {markingReady
-                            ? "Секунду..."
+                            ? t("justASecond")
                             : iAmReady
-                              ? "Я ещё выбираю"
-                              : "Выбор сделан, заказывайте!"}
+                              ? t("stillChoosing")
+                              : t("imDone")}
                         </Button>
                         <button
                           type="button"
@@ -1044,8 +1054,8 @@ export default function OrderPage({
                           className="text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-center py-2 cursor-pointer"
                         >
                           {showManualForm
-                            ? "Скрыть ручной ввод"
-                            : "Нет в\u00A0меню? Добавить вручную"}
+                            ? t("hideManual")
+                            : t("notOnTheMenu")}
                         </button>
                         {showManualForm && (
                           <form
@@ -1055,11 +1065,11 @@ export default function OrderPage({
                             <div className="grid grid-cols-[1fr_120px] gap-3">
                               <div className="space-y-1">
                                 <Label htmlFor="dishName" className="text-xs">
-                                  Название блюда
+                                  {t("dishName")}
                                 </Label>
                                 <Input
                                   id="dishName"
-                                  placeholder="Пицца Маргарита"
+                                  placeholder={t("dishNamePlaceholder")}
                                   value={dishName}
                                   onChange={(e) => setDishName(e.target.value)}
                                   required
@@ -1068,7 +1078,7 @@ export default function OrderPage({
                               </div>
                               <div className="space-y-1">
                                 <Label htmlFor="price" className="text-xs">
-                                  Цена, {unit}
+                                  {t("priceLabel")}, {unit}
                                 </Label>
                                 <Input
                                   id="price"
@@ -1088,7 +1098,7 @@ export default function OrderPage({
                               className="w-full"
                               size="sm"
                             >
-                              {adding ? "Добавляем..." : "Добавить"}
+                              {adding ? t("adding") : t("add")}
                             </Button>
                           </form>
                         )}
@@ -1100,24 +1110,24 @@ export default function OrderPage({
                   <Card>
                     <CardHeader>
                       <CardTitle className="text-lg">
-                        Добавить блюдо вручную
+                        {t("addManually")}
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
                       <form onSubmit={handleAddManual} className="space-y-4">
                         <div className="grid grid-cols-[1fr_120px] gap-3">
                           <div className="space-y-2">
-                            <Label htmlFor="dishName">Название блюда</Label>
+                            <Label htmlFor="dishName">{t("dishName")}</Label>
                             <Input
                               id="dishName"
-                              placeholder="Пицца Маргарита"
+                              placeholder={t("dishNamePlaceholder")}
                               value={dishName}
                               onChange={(e) => setDishName(e.target.value)}
                               required
                             />
                           </div>
                           <div className="space-y-2">
-                            <Label htmlFor="price">Цена, {unit}</Label>
+                            <Label htmlFor="price">{t("priceLabel")}, {unit}</Label>
                             <Input
                               id="price"
                               type="number"
@@ -1134,7 +1144,7 @@ export default function OrderPage({
                           disabled={adding}
                           className="w-full"
                         >
-                          {adding ? "Добавляем..." : "Добавить"}
+                          {adding ? t("adding") : t("add")}
                         </Button>
                       </form>
                     </CardContent>
@@ -1149,16 +1159,8 @@ export default function OrderPage({
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-lg">
-                    Итого &mdash; {session.items.length}{" "}
-                    {(() => {
-                      const n = session.items.length;
-                      const mod10 = n % 10;
-                      const mod100 = n % 100;
-                      if (mod100 >= 11 && mod100 <= 19) return "блюд";
-                      if (mod10 === 1) return "блюдо";
-                      if (mod10 >= 2 && mod10 <= 4) return "блюда";
-                      return "блюд";
-                    })()}
+                    {t("totalLabel")} &mdash; {session.items.length}{" "}
+                    {dishWord(session.items.length, localeFor(session.currency))}
                   </CardTitle>
                   <span className="text-sm font-semibold tabular-nums text-right min-w-[5rem]">
                     {fmtPrice(totalSum)}
@@ -1184,7 +1186,10 @@ export default function OrderPage({
                               </span>
                             )}
                             {itemUser.firstName} {itemUser.lastName || ""}
-                            <ParticipantStatus state={participantState(userId)} />
+                            <ParticipantStatus
+                              state={participantState(userId)}
+                              locale={localeFor(session.currency)}
+                            />
                           </h3>
                           <span className="text-sm text-muted-foreground tabular-nums text-right min-w-[5rem]">
                             {fmtPrice(total)}
@@ -1219,7 +1224,7 @@ export default function OrderPage({
                                       }
                                       className="text-destructive hover:text-destructive/80 text-xs font-medium cursor-pointer"
                                     >
-                                      Удалить
+                                      {t("remove")}
                                     </button>
                                   )}
                                 <span className="font-medium tabular-nums text-right min-w-[5rem]">
@@ -1235,7 +1240,7 @@ export default function OrderPage({
                   )
                 ) : (
                   <p className="text-muted-foreground text-sm text-center py-4">
-                    Пока никто не{"\u00A0"}добавил блюда
+                    {t("nobodyYet")}
                   </p>
                 )}
               </CardContent>
@@ -1249,21 +1254,20 @@ export default function OrderPage({
                 <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="lg" className="w-full">
-                      Рассчитать заказ
+                      {t("settleOrder")}
                     </Button>
                   </DialogTrigger>
                   <DialogContent>
                     <DialogHeader className="sr-only">
-                      <DialogTitle>Завершение сбора заказов</DialogTitle>
+                      <DialogTitle>{t("settleTitle")}</DialogTitle>
                     </DialogHeader>
                     <DialogDescription>
-                      Укажите стоимость доставки и{"\u00A0"}сервисный сбор. Сумма будет
-                      разделена поровну между {uniqueUsers}{"\u00A0"}участниками.
+                      {t("settleText")} {uniqueUsers}{"\u00A0"}{t("settleTextTail")}
                     </DialogDescription>
                     <div className="space-y-4 py-4">
                       <div className="space-y-2">
                         <Label htmlFor="deliveryFee">
-                          Стоимость доставки, {unit}
+                          {t("deliveryCost")}, {unit}
                         </Label>
                         <Input
                           id="deliveryFee"
@@ -1275,7 +1279,7 @@ export default function OrderPage({
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="serviceFee">Сервисный сбор, {unit}</Label>
+                        <Label htmlFor="serviceFee">{t("serviceFee")}, {unit}</Label>
                         <Input
                           id="serviceFee"
                           type="number"
@@ -1287,7 +1291,7 @@ export default function OrderPage({
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="discountPct">
-                          Скидка на{" "}блюда, %
+                          {t("dishDiscount")}
                         </Label>
                         <Input
                           id="discountPct"
@@ -1302,7 +1306,7 @@ export default function OrderPage({
                       {uniqueUsers > 0 && (
                         <div className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-md">
                           <p>
-                            Доп. расходы на{"\u00A0"}человека:{" "}
+                            {t("extraPerPerson")}{" "}
                             <strong>
                               {fmtPrice(
                                 roundMoney(
@@ -1314,7 +1318,7 @@ export default function OrderPage({
                             </strong>
                           </p>
                           <p className="mt-1">
-                            Общая сумма блюд:{" "}
+                            {t("foodTotal")}{" "}
                             <strong>
                               {Number(discountPct) > 0 ? (
                                 <>
@@ -1343,8 +1347,8 @@ export default function OrderPage({
                         className="w-full"
                       >
                         {finalizing
-                          ? "Оформляем..."
-                          : "Подтвердить и\u00A0пусть платят"}
+                          ? t("finalizing")
+                          : t("confirmAndPay")}
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -1355,13 +1359,13 @@ export default function OrderPage({
             {session.status === "ORDERED" && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-lg">Кто что должен</CardTitle>
+                  <CardTitle className="text-lg">{t("whoOwes")}</CardTitle>
                   <CardDescription>
-                    Доставка {fmtPrice(session.deliveryFee)} и{"\u00A0"}сервисный сбор {fmtPrice(session.serviceFee)}
+                    {t("deliveryAndFee", { delivery: fmtPrice(session.deliveryFee), service: fmtPrice(session.serviceFee) })}
                     {session.discountPercent > 0 && (
                       <>
                         {" "}
-                        · скидка на блюда {session.discountPercent}%
+                        {t("discountSuffix", { percent: session.discountPercent })}
                       </>
                     )}
                   </CardDescription>
@@ -1406,7 +1410,7 @@ export default function OrderPage({
                             <span className="flex items-center gap-2 shrink-0">
                               {hasPaid && (
                                 <span className="text-xs font-medium text-green-600 dark:text-green-500">
-                                  перевёл ✅
+                                  {t("transferred")}
                                 </span>
                               )}
                               <span
@@ -1431,13 +1435,13 @@ export default function OrderPage({
                     <div className="rounded-md border p-3 space-y-3">
                       {iPaid ? (
                         <p className="text-sm text-green-600 dark:text-green-500 font-medium">
-                          Перевод отмечен — спасибо! ✅
+                          {t("transferNoted")}
                         </p>
                       ) : (
                         <>
                           <div className="flex items-baseline justify-between gap-3">
                             <span className="text-sm text-muted-foreground">
-                              С тебя
+                              {t("youOwe")}
                             </span>
                             <button
                               type="button"
@@ -1445,16 +1449,16 @@ export default function OrderPage({
                                 copyToClipboard(String(myTotal), "amount")
                               }
                               className="text-xl font-bold tabular-nums hover:text-blue-600 transition-colors cursor-pointer"
-                              title="Скопировать сумму"
+                              title={t("copyAmount")}
                             >
-                              {copied === "amount" ? "скопировано" : fmtPrice(myTotal)}
+                              {copied === "amount" ? t("copied") : fmtPrice(myTotal)}
                             </button>
                           </div>
 
                           {session.admin.phoneNumber ? (
                             <div className="flex items-baseline justify-between gap-3">
                               <span className="text-sm text-muted-foreground">
-                                На номер
+                                {t("toThePhone")}
                               </span>
                               <button
                                 type="button"
@@ -1465,22 +1469,22 @@ export default function OrderPage({
                                   )
                                 }
                                 className="text-sm font-mono font-medium hover:text-blue-600 transition-colors cursor-pointer"
-                                title="Скопировать номер"
+                                title={t("copyPhone")}
                               >
                                 {copied === "phone"
-                                  ? "скопировано"
+                                  ? t("copied")
                                   : fmtPhone(session.admin.phoneNumber)}
                               </button>
                             </div>
                           ) : (
                             <p className="text-xs text-muted-foreground">
-                              Номер не указан — спроси у{"\u00A0"}
+                              {t("noPhone")}
                               {session.admin.firstName}
                             </p>
                           )}
 
                           <p className="text-xs text-muted-foreground">
-                            Нажми на сумму или номер, чтобы скопировать
+                            {t("tapToCopy")}
                           </p>
 
                           <Button
@@ -1488,7 +1492,7 @@ export default function OrderPage({
                             disabled={markingPaid}
                             onClick={handleMarkPaid}
                           >
-                            {markingPaid ? "Отмечаю..." : "Я перевёл"}
+                            {markingPaid ? t("markingPaid") : t("iPaid")}
                           </Button>
                         </>
                       )}
@@ -1549,7 +1553,7 @@ export default function OrderPage({
             <DialogHeader>
               <DialogTitle>{optionsItem?.name}</DialogTitle>
               <DialogDescription>
-                Выбери опции — они попадут в{" "}заказ.
+                {t("pickOptions")}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-5 py-2">
@@ -1562,12 +1566,12 @@ export default function OrderPage({
                       {group.name}
                       {group.required && (
                         <span className="text-xs text-muted-foreground font-normal">
-                          обязательно
+                          {t("optionRequired")}
                         </span>
                       )}
                       {!isRadio && group.maxSelected > 1 && (
                         <span className="text-xs text-muted-foreground font-normal">
-                          до {group.maxSelected}
+                          {t("optionUpTo", { max: group.maxSelected })}
                         </span>
                       )}
                     </div>
@@ -1619,8 +1623,8 @@ export default function OrderPage({
                 className="w-full"
               >
                 {optionsItem
-                  ? `Добавить за ${fmtPrice(optionsItem.price + optionsExtraPrice)}`
-                  : "Добавить"}
+                  ? t("addFor", { price: fmtPrice(optionsItem.price + optionsExtraPrice) })
+                  : t("add")}
               </Button>
             </DialogFooter>
           </DialogContent>

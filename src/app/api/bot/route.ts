@@ -4,6 +4,7 @@ import type { InlineKeyboardButton } from "grammy/types";
 import { getBot } from "@/lib/bot";
 import { prisma } from "@/lib/prisma";
 import { startReminderTicker, stopReminders } from "@/lib/reminders";
+import { localeFor, translator, dishWord, type Locale } from "@/lib/i18n";
 import { Prisma } from "@prisma/client";
 import { BANK_CODES } from "@/lib/telegram";
 import {
@@ -543,21 +544,26 @@ function deadlineFromSlot(hhmm: string, timeZone: string): Date {
 
 function deadlineRows(
   sessionId: string,
-  timeZone: string
+  timeZone: string,
+  locale: Locale = "ru"
 ): InlineKeyboardButton[][] {
   const buttons: InlineKeyboardButton[] = nextTimeSlots(timeZone).map((hhmm) => ({
     text: prettySlot(hhmm),
     callback_data: `until:${sessionId}:${hhmm}`,
   }));
   buttons.push({
-    text: "пофигу",
+    text: translator(locale)("botNoDeadline"),
     callback_data: `until:${sessionId}:none`,
   });
   return [buttons];
 }
 
-function formatDeadline(deadline: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat("ru-RU", {
+function formatDeadline(
+  deadline: Date,
+  timeZone: string,
+  locale: Locale = "ru"
+): string {
+  return new Intl.DateTimeFormat(locale === "en" ? "en-GB" : "ru-RU", {
     hour: "2-digit",
     minute: "2-digit",
     timeZone,
@@ -570,16 +576,20 @@ function orderKeyboard(
   currentSlug: string | null,
   menuMissing: boolean = false,
   askDeadline: boolean = false,
-  timeZone: string = DEFAULT_ZONE
+  timeZone: string = DEFAULT_ZONE,
+  locale: Locale = "ru"
 ) {
   // The order link lives in the message text, so no link button here
   const rows: InlineKeyboardButton[][] = [];
 
-  if (askDeadline) rows.push(...deadlineRows(sessionId, timeZone));
+  if (askDeadline) rows.push(...deadlineRows(sessionId, timeZone, locale));
 
   if (menuMissing) {
     rows.push([
-      { text: "🔄 Загрузить меню ещё раз", callback_data: `menu:${sessionId}` },
+      {
+        text: translator(locale)("botReloadMenu"),
+        callback_data: `menu:${sessionId}`,
+      },
     ]);
   }
 
@@ -637,24 +647,45 @@ async function createOrderViaProvider(
 
   const orderUrl = `${baseUrl}/order/${session.id}`;
   const name = menu.placeName || provider.title;
+  // Dubai services speak English to the people who will read the order
+  const locale = localeFor(provider.currency);
+  const t = translator(locale);
+
   const where = menu.placeAddress
     ? menu.placeAddress.includes(":")
       ? `\n\n<b>${menu.placeAddress}</b>`
-      : `\n\nФилиал: <b>${menu.placeAddress}</b>`
+      : `\n\n${t("botBranch", { address: menu.placeAddress })}`
     : "";
   const fee =
     menu.deliveryFee != null && menu.deliveryFee > 0
-      ? `\n\nДоставка по\u00A0данным ${provider.title}: ${menu.deliveryFee} ${provider.currency}` +
-        (menu.minimumOrder != null ? `, минимальный заказ ${menu.minimumOrder} ${provider.currency}` : "")
+      ? "\n\n" +
+        t("botDeliveryFee", {
+          service: provider.title,
+          fee: menu.deliveryFee,
+          currency: provider.currency,
+        }) +
+        (menu.minimumOrder != null
+          ? t("botMinimumOrder", {
+              amount: menu.minimumOrder,
+              currency: provider.currency,
+            })
+          : "")
       : "";
 
   const mainLine =
     menu.items.length > 0
-      ? `Заказываем из <a href="${restaurantUrl}">${name}</a>, ${menu.items.length} ${pluralizeDishes(menu.items.length)} на\u00A0выбор`
-      : `Заказываем из <a href="${restaurantUrl}">${name}</a>\n\nМеню не\u00A0удалось загрузить — позиции можно добавить вручную`;
+      ? t("botOrderingFrom", {
+          url: restaurantUrl,
+          name,
+          count: menu.items.length,
+          dishWord: dishWord(menu.items.length, locale),
+        })
+      : t("botNoMenu", { url: restaurantUrl, name });
 
   await ctx.reply(
-    `[${pickRandom(OBED_PHRASES)}]\n\n${mainLine}${where}${fee}\n\nСсылка для заказа: ${orderUrl}\n\nУкажи, до\u00A0скольки принимаем заказы:`,
+    `[${pickRandom(OBED_PHRASES)}]\n\n${mainLine}${where}${fee}\n\n` +
+      t("botOrderLink", { url: orderUrl }) +
+      `\n\n${t("botAskDeadline")}`,
     {
       parse_mode: "HTML",
       link_preview_options: { is_disabled: true },
@@ -664,7 +695,8 @@ async function createOrderViaProvider(
         null,
         menu.items.length === 0,
         true,
-        provider.timeZone
+        provider.timeZone,
+        locale
       ),
     }
   );
@@ -818,17 +850,22 @@ bot.callbackQuery(/^until:([^:]+):(\d{3,4}|none)$/, async (ctx) => {
     }
     if (session.adminId !== BigInt(ctx.from.id)) {
       await ctx.answerCallbackQuery({
-        text: "Время ставит тот, кто создал заказ",
+        text: translator(localeFor(detectProvider(session.url)?.currency))("botOnlyAuthor"),
       });
       return;
     }
     if (session.status !== "OPEN") {
-      await ctx.answerCallbackQuery({ text: "Сбор заказов уже завершён" });
+      await ctx.answerCallbackQuery({
+        text: translator(localeFor(detectProvider(session.url)?.currency))("errClosed"),
+      });
       return;
     }
 
     // A Dubai link schedules in Dubai time, a Moscow one in Moscow time
-    const timeZone = detectProvider(session.url)?.timeZone ?? DEFAULT_ZONE;
+    const provider = detectProvider(session.url);
+    const timeZone = provider?.timeZone ?? DEFAULT_ZONE;
+    const locale = localeFor(provider?.currency);
+    const t = translator(locale);
     const deadlineAt =
       choice === "none"
         ? null
@@ -841,17 +878,18 @@ bot.callbackQuery(/^until:([^:]+):(\d{3,4}|none)$/, async (ctx) => {
 
     await ctx.answerCallbackQuery({
       text: deadlineAt
-        ? `Принимаем заказы до ${formatDeadline(deadlineAt, timeZone)}`
-        : "Без ограничения по времени",
+        ? t("botDeadlineAnswer", {
+            time: formatDeadline(deadlineAt, timeZone, locale),
+          })
+        : t("botNoDeadlineAnswer"),
     });
 
     const msg = ctx.callbackQuery.message;
     if (msg?.text) {
       // Drop the question, keep everything above it
-      const withoutAsk = msg.text.replace(
-        /\n*Укажи, до\u00A0?скольки принимаем заказы:[\s\S]*$/u,
-        ""
-      );
+      const ask = t("botAskDeadline");
+      const askAt = msg.text.lastIndexOf(ask);
+      const withoutAsk = askAt >= 0 ? msg.text.slice(0, askAt) : msg.text;
       const keyboard = msg.reply_markup?.inline_keyboard
         ?.map((row) => row.filter((b) => !("callback_data" in b && String(b.callback_data).startsWith("until:"))))
         .filter((row) => row.length > 0);
@@ -859,8 +897,10 @@ bot.callbackQuery(/^until:([^:]+):(\d{3,4}|none)$/, async (ctx) => {
         await ctx.editMessageText(
           `${withoutAsk.trimEnd()}\n\n${
             deadlineAt
-              ? `⏳ Заказы принимаем до <b>${formatDeadline(deadlineAt, timeZone)}</b>`
-              : "⏳ Время не\u00A0ограничено"
+              ? t("botDeadlineSet", {
+                  time: formatDeadline(deadlineAt, timeZone, locale),
+                })
+              : t("botDeadlineNone")
           }`,
           {
             parse_mode: "HTML",
@@ -896,13 +936,14 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
     }
 
     const provider = detectProvider(session.url);
+    const t = translator(localeFor(provider?.currency));
     const slug = session.placeSlug || parseSlug(session.url);
     if (!slug && !provider) {
-      await ctx.answerCallbackQuery({ text: "Не разобрал ссылку на ресторан" });
+      await ctx.answerCallbackQuery({ text: t("botSomethingBroke") });
       return;
     }
 
-    await ctx.answerCallbackQuery({ text: "Пробую загрузить меню…" });
+    await ctx.answerCallbackQuery({ text: t("botMenuLoading") });
     // Ask the service this link belongs to — the Yandex parser knows nothing
     // about Deliveroo or Talabat pages.
     const menuCount =
@@ -915,7 +956,7 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
 
     if (menuCount === 0) {
       await ctx.answerCallbackQuery({
-        text: "У этого ресторана меню не публикуется — добавьте блюда вручную",
+        text: t("botMenuStillEmpty"),
       });
       return;
     }
@@ -1038,13 +1079,15 @@ bot.callbackQuery(/^paid:(.+)$/, async (ctx) => {
   try {
     const orderSession = await prisma.orderSession.findUnique({
       where: { id: sessionId },
-      select: { id: true, adminId: true },
+      select: { id: true, adminId: true, currency: true },
     });
 
     if (!orderSession) {
-      await ctx.answerCallbackQuery({ text: "Заказ не найден 🤷" });
+      await ctx.answerCallbackQuery({ text: translator("ru")("botOrderGone") });
       return;
     }
+
+    const t = translator(localeFor(orderSession.currency));
 
     const existing = await prisma.payment.findUnique({
       where: {
@@ -1063,7 +1106,7 @@ bot.callbackQuery(/^paid:(.+)$/, async (ctx) => {
 
     await stopReminders(sessionId, BigInt(tgUser.id));
 
-    await ctx.answerCallbackQuery({ text: "Принято! 💸" });
+    await ctx.answerCallbackQuery({ text: t("botPaidAccepted") });
 
     // Remove the "I paid" button, keep bank links, append confirmation
     const msg = ctx.callbackQuery.message;
@@ -1073,7 +1116,7 @@ bot.callbackQuery(/^paid:(.+)$/, async (ctx) => {
         .filter((row) => row.length > 0);
       try {
         await ctx.editMessageText(
-          `${msg.text}\n\n✅ Перевод отмечен`,
+          `${msg.text}\n\n${t("botPaidNoted")}`,
           keyboard && keyboard.length > 0
             ? { reply_markup: { inline_keyboard: keyboard } }
             : undefined
@@ -1091,7 +1134,7 @@ bot.callbackQuery(/^paid:(.+)$/, async (ctx) => {
       try {
         await bot.api.sendMessage(
           Number(orderSession.adminId),
-          `💸 ${name} отметил перевод по заказу`
+          t("botPaidNotice", { name })
         );
       } catch {
         /* admin might have blocked the bot */

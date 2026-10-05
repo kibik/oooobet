@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { localeFor, translator } from "@/lib/i18n";
 
 // POST /api/orders/[id]/ready — "I'm done choosing"
 // DELETE — take it back and keep picking
@@ -11,25 +12,29 @@ export async function POST(
   try {
     const { id } = await params;
     const session = await getSession();
+    // Until the order is loaded we do not know its language yet
+    let t = translator("ru");
 
     if (!session.userId) {
       return NextResponse.json(
-        { error: "Необходимо авторизоваться" },
+        { error: t("errAuth") },
         { status: 401 }
       );
     }
 
     const orderSession = await prisma.orderSession.findUnique({
       where: { id },
-      select: { status: true },
+      select: { status: true, currency: true },
     });
 
+    t = translator(localeFor(orderSession?.currency));
+
     if (!orderSession) {
-      return NextResponse.json({ error: "Заказ не найден" }, { status: 404 });
+      return NextResponse.json({ error: t("errSessionMissing") }, { status: 404 });
     }
     if (orderSession.status !== "OPEN") {
       return NextResponse.json(
-        { error: "Сбор заказов уже завершён" },
+        { error: t("errClosed") },
         { status: 400 }
       );
     }
@@ -40,7 +45,7 @@ export async function POST(
     });
     if (itemCount === 0) {
       return NextResponse.json(
-        { error: "Сначала добавь хотя бы одно блюдо" },
+        { error: t("errNoDishesYet") },
         { status: 400 }
       );
     }
@@ -68,6 +73,8 @@ export async function DELETE(
   try {
     const { id } = await params;
     const session = await getSession();
+    // Until the order is loaded we do not know its language yet
+    let t = translator("ru");
 
     if (!session.userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

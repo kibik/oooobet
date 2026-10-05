@@ -5,6 +5,7 @@ import { getBot } from "@/lib/bot";
 import { paymentDetails, payTarget } from "@/lib/telegram";
 import { detectProvider } from "@/lib/providers";
 import { money, roundIn, formatMoney } from "@/lib/money";
+import { localeFor, translator } from "@/lib/i18n";
 import { scheduleFirstReminder } from "@/lib/reminders";
 
 // POST /api/orders/[id]/finalize - Admin finalizes order with delivery/service fees
@@ -42,26 +43,28 @@ export async function POST(
     // Check that current user is admin
     if (orderSession.adminId.toString() !== session.userId) {
       return NextResponse.json(
-        { error: "Только администратор может завершить сбор заказов" },
+        { error: translator(localeFor(orderSession.currency))("errNotAdmin") },
         { status: 403 }
       );
     }
 
     if (orderSession.status !== "OPEN") {
       return NextResponse.json(
-        { error: "Заказ уже завершен" },
+        { error: translator(localeFor(orderSession.currency))("errAlreadyDone") },
         { status: 400 }
       );
     }
 
     const currency = orderSession.currency;
+    // Dubai orders are written in English, Moscow ones in Russian
+    const t = translator(localeFor(currency));
     // Name the service that actually took the fee
     const provider = detectProvider(orderSession.url);
     // Keep the old joke for Yandex orders; name the service for the rest
     const serviceFeeLine =
       !provider || provider.id === "yandex"
-        ? "монополисту Яндексу"
-        : `сервису ${provider.title}`;
+        ? t("botFeeYandex")
+        : t("botFeeService", { service: provider.title });
     const fmt = (value: number) => formatMoney(value, currency);
     const round = (value: number) => roundIn(value, currency);
 
@@ -164,13 +167,14 @@ export async function POST(
 
           const discountLine =
             discountPercent > 0
-              ? `\nСкидка на блюда: ${discountPercent}%`
+              ? "\n" + t("botDiscountLine", { percent: discountPercent })
               : "";
 
           const summaryText =
             lines.length > 0
-              ? `Обед заказан! Ждём переводов:\n\n${lines.join("\n")}${discountLine}\n\nВсего к\u00A0получению: ${fmt(totalToReceive)}`
-              : "Обед заказан! Ты был единственным участником.";
+              ? `${t("botOrderPlaced")}\n\n${lines.join("\n")}${discountLine}\n\n` +
+                t("botTotalToReceive", { total: fmt(totalToReceive) })
+              : t("botAloneInOrder");
 
           await bot.api.sendMessage(Number(userId), summaryText);
           notifiedCount++;
@@ -179,7 +183,7 @@ export async function POST(
           const extra = round(extraPerPerson);
           const discountNote =
             discountPercent > 0
-              ? ` Еда уже со скидкой ${discountPercent}%.`
+              ? t("botDiscountNote", { percent: discountPercent })
               : "";
 
           // What exactly they ordered, so the sum is verifiable
@@ -196,24 +200,32 @@ export async function POST(
           // make the amount easy to copy and let people settle it their way.
           const details = currency === "RUB" ? paymentDetails(adminPhone, total) : null;
           const requisites = details
-            ? `\n\nПеревести <code>${details.amount}</code>\u00A0₽ по\u00A0номеру <code>+${details.phone}</code>` +
-              `\n<i>Нажми на\u00A0номер или\u00A0сумму, чтобы скопировать</i>`
+            ? "\n\n" +
+              t("botTransferTo", { amount: details.amount, phone: details.phone })
             : currency === "RUB"
-              ? "\n\nНомер для перевода не\u00A0указан — спроси у\u00A0заказавшего."
-              : `\n\nК\u00A0переводу <code>${roundIn(total, currency)}</code> ${currency}` +
-                `\n<i>Нажми на\u00A0сумму, чтобы скопировать</i>`;
+              ? "\n\n" + t("botNoRequisites")
+              : "\n\n" +
+                t("botAmountToSend", {
+                  amount: roundIn(total, currency),
+                  currency,
+                });
 
           // A one-tap link exists only if the recipient told us their bank
           const target = payTarget(orderSession.admin, total, currency);
           const buttons = [
             ...(target ? [[{ text: target.title, url: target.url }]] : []),
-            [{ text: "✅ Я перевёл", callback_data: `paid:${id}` }],
+            [{ text: t("botIPaid"), callback_data: `paid:${id}` }],
           ];
 
           await bot.api.sendMessage(
             Number(userId),
-            `Обед заказан. С\u00A0тебя ${fmt(total)}. ` +
-              `${fmt(foodPrice)} за\u00A0еду и\u00A0${fmt(extra)} ${serviceFeeLine}.${discountNote}` +
+            t("botYouOwe", {
+              total: fmt(total),
+              food: fmt(foodPrice),
+              extra: fmt(extra),
+              feeTarget: serviceFeeLine,
+              discount: discountNote,
+            }) +
               `\n\n${dishLines}` +
               requisites,
             {

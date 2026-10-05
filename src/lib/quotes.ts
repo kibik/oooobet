@@ -15,10 +15,22 @@ export const DAILY_QUOTES = [
   "Хлеба ни\u00A0куска\u00A0— и\u00A0в\u00A0горнице тоска",
 ];
 
-export function getDailyQuote(): string {
+const DAILY_QUOTES_EN = [
+  "A good lunch is one you don't have to loosen your belt for",
+  "An army marches on its stomach",
+  "Hunger is the best sauce",
+  "You can't work on an empty stomach",
+  "The way to a colleague's heart is through their lunch",
+  "Eat breakfast yourself, share lunch with a friend",
+  "After lunch rest a while, after dinner walk a mile",
+  "Lunch tastes better when someone else orders it",
+];
+
+export function getDailyQuote(locale: "ru" | "en" = "ru"): string {
   const dayOfYear = Math.floor(
     (Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) /
       86400000
   );
-  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
+  const quotes = locale === "en" ? DAILY_QUOTES_EN : DAILY_QUOTES;
+  return quotes[dayOfYear % quotes.length];
 }

@@ -5,12 +5,13 @@
  *  - paid:    marked the transfer (static money flying off)
  */
 
+import type { Locale } from "@/lib/i18n";
+
 export type ParticipantState = "picking" | "ready" | "paid";
 
-const LABEL: Record<ParticipantState, string> = {
-  picking: "выбирает",
-  ready: "выбрал",
-  paid: "перевёл",
+const LABEL: Record<Locale, Record<ParticipantState, string>> = {
+  ru: { picking: "выбирает", ready: "выбрал", paid: "перевёл" },
+  en: { picking: "choosing", ready: "ready", paid: "paid" },
 };
 
 const TONE: Record<ParticipantState, string> = {
@@ -71,18 +72,21 @@ function PaidIcon() {
 
 export default function ParticipantStatus({
   state,
+  locale = "ru",
 }: {
   state: ParticipantState;
+  locale?: Locale;
 }) {
+  const label = LABEL[locale][state];
   return (
     <span
       className={`inline-flex items-center gap-1 text-xs whitespace-nowrap ${TONE[state]}`}
-      title={LABEL[state]}
+      title={label}
     >
       {state === "picking" && <PickingIcon />}
       {state === "ready" && <ReadyIcon />}
       {state === "paid" && <PaidIcon />}
-      {LABEL[state]}
+      {label}
     </span>
   );
 }
