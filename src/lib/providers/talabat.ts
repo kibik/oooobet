@@ -1,21 +1,27 @@
 /**
  * Talabat (UAE).
  *
- * Talabat shows a menu only after a delivery area is chosen, and the choice
- * lives in the app's own state rather than a URL or cookie we can set. Their
- * menu endpoint is not reachable without going through that flow, and the site
- * sits behind Cloudflare, which blocks repeated automated requests outright.
+ * A Talabat brand page ("/uae/skinny-slice") shows no dishes: the menu belongs
+ * to a branch and appears only once a delivery area is chosen. The area, it
+ * turns out, can be named in the URL — "/uae/restaurant/{branchId}/{slug}?aid=
+ * {areaId}" renders the full menu server-side, and the brand page gives the
+ * branch id away as `vendorId`.
  *
- * So we read what the public brand page does give us — the venue's name and
- * branch — and leave the dishes to be added by hand. The order itself still
- * works properly: dirhams, Dubai time, the right restaurant name, and the
- * "add manually" flow the app already has for menus it cannot read.
+ * Both pages carry everything we need inside __NEXT_DATA__, so one fetch each
+ * gives names, descriptions, prices, photos and sections.
  */
 
-import type { Provider, ProviderMenu } from "./types";
+import type { Provider, ProviderMenu, ParsedMenuItem } from "./types";
 
 /** Santorini, DAMAC Lagoons — confirmed on Talabat's own map. */
 export const DELIVERY_POINT = { lat: 25.0164324, lng: 55.2448055 };
+
+/**
+ * Talabat has no area for DAMAC Lagoons itself; Damac Hills is the one it
+ * delivers to that covers the villa. Its areas come from
+ * /nextLocationApi/location/country-areas/4.
+ */
+export const DELIVERY_AREA_ID = 8909;
 
 const HEADERS = {
   "User-Agent":
@@ -23,40 +29,153 @@ const HEADERS = {
   "Accept-Language": "en",
 };
 
-interface BrandPageData {
-  props?: {
-    pageProps?: {
-      data?: {
-        name?: string;
-        branchSlug?: string;
-        restaurantSlug?: string;
-        cuisineString?: string;
-      };
-    };
-  };
+interface BrandVenue {
+  name?: string;
+  branchSlug?: string;
+  restaurantSlug?: string;
+  cuisineString?: string;
+  /** The branch id the menu page is addressed by */
+  vendorId?: number;
+}
+
+interface TalabatItem {
+  name?: string;
+  description?: string;
+  price?: number;
+  originalImage?: string | null;
+  image?: string | null;
+}
+
+interface TalabatCategory {
+  name?: string;
+  items?: TalabatItem[];
+}
+
+interface TalabatRestaurant {
+  name?: string;
+  branchName?: string;
+  areaName?: string;
+  deliveryFee?: string | number;
+  minimumOrderAmount?: number;
+}
+
+function nextData(html: string): unknown | null {
+  const match = html.match(
+    /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/
+  );
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function brandVenue(html: string): BrandVenue | null {
+  const data = nextData(html) as
+    | { props?: { pageProps?: { data?: BrandVenue } } }
+    | null;
+  return data?.props?.pageProps?.data ?? null;
 }
 
 export function parseBrandPage(html: string): {
   placeName: string | null;
   placeAddress: string | null;
 } {
-  const match = html.match(
-    /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/
-  );
-  if (!match) return { placeName: null, placeAddress: null };
+  const venue = brandVenue(html);
+  return {
+    placeName: venue?.name ?? null,
+    // The brand page has no branch address; the cuisine is the only extra
+    // context it offers, and it reads fine under the name
+    placeAddress: venue?.cuisineString ?? null,
+  };
+}
 
-  try {
-    const data: BrandPageData = JSON.parse(match[1]);
-    const venue = data.props?.pageProps?.data;
-    return {
-      placeName: venue?.name ?? null,
-      // Talabat's brand page has no branch address; the cuisine is the only
-      // extra context it offers, and it reads fine under the name
-      placeAddress: venue?.cuisineString ?? null,
-    };
-  } catch {
-    return { placeName: null, placeAddress: null };
+/** Turn a menu page into dishes, keeping Talabat's own section order. */
+export function parseMenuPage(html: string): ProviderMenu {
+  const data = nextData(html) as
+    | {
+        props?: {
+          pageProps?: {
+            initialMenuState?: {
+              restaurant?: TalabatRestaurant;
+              menuData?: { categories?: TalabatCategory[] };
+            };
+          };
+        };
+      }
+    | null;
+
+  const state = data?.props?.pageProps?.initialMenuState;
+  const restaurant = state?.restaurant;
+  const categories = state?.menuData?.categories ?? [];
+
+  // "Picks for you" repeats dishes that have their own section further down.
+  const items: ParsedMenuItem[] = [];
+  const seen = new Set<string>();
+  let order = 0;
+
+  for (const category of categories) {
+    const section = category.name?.trim();
+    if (!section || section.startsWith("Picks for you")) continue;
+
+    // Talabat prefixes many of its sections with a letter, as in "S-Pizza"
+    const title = section.replace(/^[A-Za-z]-/, "");
+    const categoryOrder = order++;
+
+    for (const raw of category.items ?? []) {
+      const name = raw.name?.trim();
+      const price = Number(raw.price);
+      if (!name || !Number.isFinite(price) || price <= 0) continue;
+      if (seen.has(name)) continue;
+      seen.add(name);
+
+      items.push({
+        name,
+        price,
+        category: title,
+        categoryOrder,
+        description:
+          raw.description?.replace(/\s*\r?\n\s*/g, " ").trim() || null,
+        weight: null,
+        imageUrl: raw.originalImage || raw.image?.split("?")[0] || null,
+        optionGroups: null,
+      });
+    }
   }
+
+  const deliveryFee = Number(restaurant?.deliveryFee);
+
+  return {
+    items,
+    placeName: restaurant?.name ?? null,
+    placeAddress: restaurant?.areaName || restaurant?.branchName || null,
+    deliveryFee: Number.isFinite(deliveryFee) ? deliveryFee : null,
+    minimumOrder: restaurant?.minimumOrderAmount || null,
+  };
+}
+
+async function get(url: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const res = await fetch(url, { headers: HEADERS, signal: controller.signal });
+    if (!res.ok) {
+      console.error(`Talabat: HTTP ${res.status} на ${url}`);
+      return null;
+    }
+    return await res.text();
+  } catch (err) {
+    console.error("Talabat: не удалось прочитать страницу", err);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Address of the menu page for a branch, delivering to our area. */
+export function menuUrl(branchId: number, slug: string): string {
+  return `https://www.talabat.com/uae/restaurant/${branchId}/${slug}?aid=${DELIVERY_AREA_ID}`;
 }
 
 export const talabat: Provider = {
@@ -85,32 +204,35 @@ export const talabat: Provider = {
 
   async fetchMenu(url) {
     const empty: ProviderMenu = { items: [] };
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 12000);
-      const res = await fetch(url, {
-        headers: HEADERS,
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
 
-      if (!res.ok) {
-        console.error(`Talabat: HTTP ${res.status}`);
-        return empty;
+    let menuPage: string | null = null;
+
+    // A menu link can be pasted directly; point it at our area either way.
+    const direct = url.match(/\/uae\/restaurant\/(\d+)\/([^/?#]+)/);
+    if (direct) {
+      menuPage = await get(menuUrl(Number(direct[1]), direct[2]));
+    } else {
+      const brandPage = await get(url);
+      if (!brandPage) return empty;
+
+      const venue = brandVenue(brandPage);
+      const branchId = venue?.vendorId;
+      const slug = venue?.branchSlug || venue?.restaurantSlug;
+
+      if (!branchId || !slug) {
+        // Still worth opening the order with the venue's name on it
+        const { placeName, placeAddress } = parseBrandPage(brandPage);
+        return { items: [], placeName, placeAddress };
       }
 
-      const html = await res.text();
-      const { placeName, placeAddress } = parseBrandPage(html);
-      // placeAddress holds the cuisine here; say so instead of passing it off
-      // as a branch address.
-      return {
-        items: [],
-        placeName,
-        placeAddress: placeAddress ? `Кухня: ${placeAddress}` : null,
-      };
-    } catch (err) {
-      console.error("Talabat: не удалось прочитать страницу", err);
-      return empty;
+      menuPage = await get(menuUrl(branchId, slug));
+      if (!menuPage) {
+        const { placeName, placeAddress } = parseBrandPage(brandPage);
+        return { items: [], placeName, placeAddress };
+      }
     }
+
+    if (!menuPage) return empty;
+    return parseMenuPage(menuPage);
   },
 };

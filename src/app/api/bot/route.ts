@@ -643,7 +643,7 @@ async function createOrderViaProvider(
       : `\n\nФилиал: <b>${menu.placeAddress}</b>`
     : "";
   const fee =
-    menu.deliveryFee != null
+    menu.deliveryFee != null && menu.deliveryFee > 0
       ? `\n\nДоставка по\u00A0данным ${provider.title}: ${menu.deliveryFee} ${provider.currency}` +
         (menu.minimumOrder != null ? `, минимальный заказ ${menu.minimumOrder} ${provider.currency}` : "")
       : "";
