@@ -42,6 +42,8 @@ interface TalabatItem {
   name?: string;
   description?: string;
   price?: number;
+  /** Price before the discount, or -1 when the dish is not on offer */
+  oldPrice?: number;
   originalImage?: string | null;
   image?: string | null;
 }
@@ -110,9 +112,11 @@ export function parseMenuPage(html: string): ProviderMenu {
   const restaurant = state?.restaurant;
   const categories = state?.menuData?.categories ?? [];
 
-  // "Picks for you" repeats dishes that have their own section further down.
+  // "Picks for you" is a shuffled shortcut to dishes listed further down.
+  // "Offers" is not: it holds the same dishes at discounted prices, and
+  // Talabat shows it as its own section, so we keep both — dropping repeats
+  // across sections once collapsed whole menus into "Offers".
   const items: ParsedMenuItem[] = [];
-  const seen = new Set<string>();
   let order = 0;
 
   for (const category of categories) {
@@ -122,6 +126,7 @@ export function parseMenuPage(html: string): ProviderMenu {
     // Talabat prefixes many of its sections with a letter, as in "S-Pizza"
     const title = section.replace(/^[A-Za-z]-/, "");
     const categoryOrder = order++;
+    const seen = new Set<string>();
 
     for (const raw of category.items ?? []) {
       const name = raw.name?.trim();
@@ -130,9 +135,13 @@ export function parseMenuPage(html: string): ProviderMenu {
       if (seen.has(name)) continue;
       seen.add(name);
 
+      const oldPrice = Number(raw.oldPrice);
+
       items.push({
         name,
         price,
+        oldPrice:
+          Number.isFinite(oldPrice) && oldPrice > price ? oldPrice : null,
         category: title,
         categoryOrder,
         description:

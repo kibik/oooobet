@@ -21,6 +21,8 @@ export interface ParsedMenuItem {
   categoryOrder: number; // keep Yandex's own category order, not alphabetical
   name: string;
   price: number;
+  /** Price before the service's own discount, when there is one */
+  oldPrice?: number | null;
   description: string | null;
   weight: string | null;
   imageUrl: string | null;

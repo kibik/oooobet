@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { parseSlug, fetchMenu, fetchPlaceInfo } from "@/lib/yandex-eda";
+import { detectProvider } from "@/lib/providers";
 import { money } from "@/lib/money";
 
 // When we last tried to (re)load a session's menu in this process. Menus cached
@@ -26,16 +27,27 @@ async function backfillMenu(sessionId: string): Promise<void> {
     where: { id: sessionId },
     select: { url: true, placeSlug: true },
   });
-  const slug = session?.placeSlug || (session?.url ? parseSlug(session.url) : null);
-  if (!slug) return;
+  if (!session) return;
 
-  const fresh = await fetchMenu(slug, 1, true, session?.url);
+  // Ask the service the link belongs to; the Yandex parser knows nothing
+  // about Deliveroo or Talabat pages.
+  const provider = detectProvider(session.url);
+  const slug = session.placeSlug || parseSlug(session.url);
+
+  let fresh;
+  if (provider && provider.id !== "yandex") {
+    fresh = (await provider.fetchMenu(session.url)).items;
+  } else {
+    if (!slug) return;
+    fresh = await fetchMenu(slug, 1, true, session.url);
+  }
   if (fresh.length === 0) return;
 
   const cachedCount = await prisma.menuItem.count({ where: { sessionId } });
 
-  // Nothing cached at all — store the whole menu
-  if (cachedCount === 0) {
+  // Nothing cached, or a menu we stored only part of — write the whole thing
+  if (cachedCount === 0 || fresh.length > cachedCount) {
+    await prisma.menuItem.deleteMany({ where: { sessionId } });
     await prisma.menuItem.createMany({
       data: fresh.map((item) => ({
         sessionId,
@@ -43,6 +55,7 @@ async function backfillMenu(sessionId: string): Promise<void> {
         categoryOrder: item.categoryOrder,
         name: item.name,
         price: money(item.price),
+        oldPrice: item.oldPrice ?? null,
         description: item.description,
         weight: item.weight,
         imageUrl: item.imageUrl,
@@ -149,6 +162,7 @@ export async function GET(
         id: string;
         name: string;
         price: number;
+        oldPrice: number | null;
         description: string | null;
         weight: string | null;
         imageUrl: string | null;
@@ -164,6 +178,7 @@ export async function GET(
         id: item.id,
         name: item.name,
         price: money(item.price),
+        oldPrice: item.oldPrice == null ? null : money(item.oldPrice),
         description: item.description,
         weight: item.weight,
         imageUrl: item.imageUrl,

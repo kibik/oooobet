@@ -100,6 +100,8 @@ interface MenuItem {
   id: string;
   name: string;
   price: number;
+  /** What the dish cost before the delivery service's own discount */
+  oldPrice?: number | null;
   description: string | null;
   weight: string | null;
   imageUrl: string | null;
@@ -969,8 +971,26 @@ export default function OrderPage({
                                       {withOptions && t("hasOptions")}
                                     </span>
                                   )}
-                                  <div className="font-semibold text-sm mt-0.5">
+                                  <div className="font-semibold text-sm mt-0.5 flex items-center gap-1.5">
                                     {fmtPrice(menuItem.price)}
+                                    {menuItem.oldPrice != null &&
+                                      menuItem.oldPrice > menuItem.price && (
+                                        <>
+                                          <span className="font-normal text-xs text-muted-foreground line-through">
+                                            {fmtPrice(menuItem.oldPrice)}
+                                          </span>
+                                          <span className="font-semibold text-xs text-green-600 dark:text-green-500">
+                                            −
+                                            {Math.round(
+                                              (1 -
+                                                menuItem.price /
+                                                  menuItem.oldPrice) *
+                                                100
+                                            )}
+                                            %
+                                          </span>
+                                        </>
+                                      )}
                                   </div>
                                 </div>
 

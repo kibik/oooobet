@@ -91,6 +91,8 @@ model MenuItem {
   categoryOrder Int      @default(0) // Yandex's own category order
   name        String
   price       Decimal      @db.Decimal(10, 2)
+  // What the dish cost before the service's own discount, when it has one
+  oldPrice    Decimal?     @db.Decimal(10, 2)
   description String?
   weight      String?
   imageUrl    String?
