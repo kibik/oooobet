@@ -57,6 +57,12 @@ export const yandexEda: Provider = {
 /** Services we can read, most specific first. */
 export const PROVIDERS: Provider[] = [yandexEda, deliveroo, talabat];
 
+/**
+ * Bump this whenever a parser starts producing a better menu: orders that are
+ * already open re-read theirs once instead of keeping what the old code stored.
+ */
+export const MENU_PARSER_VERSION = 2;
+
 export function detectProvider(url: string): Provider | null {
   return PROVIDERS.find((p) => p.matches(url)) ?? null;
 }

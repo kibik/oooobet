@@ -39,6 +39,8 @@ model OrderSession {
   // Conditions of this order people must keep in mind: a discount capped per
   // order, a minimum, a promo code. Written by whoever is paying.
   conditions      String?
+  // Which menu parser produced the cached menu. A newer parser repairs it.
+  menuVersion     Int         @default(0)
   placeOptions    Json? // other branches to choose from: [{slug,name,address}]
   status          String      @default("OPEN")
   deadlineAt      DateTime? // orders are collected until this moment

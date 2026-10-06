@@ -8,6 +8,7 @@ import { localeFor, translator, dishWord, type Locale } from "@/lib/i18n";
 import { Prisma } from "@prisma/client";
 import { BANK_CODES } from "@/lib/telegram";
 import {
+  MENU_PARSER_VERSION,
   detectProvider,
   findSupportedLink,
   type Provider,
@@ -637,6 +638,7 @@ async function createOrderViaProvider(
       url: restaurantUrl,
       adminId: BigInt(tgUser.id),
       currency: provider.currency,
+      menuVersion: MENU_PARSER_VERSION,
       // Services that publish their delivery fee prefill it for the admin
       deliveryFee: menu.deliveryFee ?? 0,
       placeSlug: provider.placeKey(restaurantUrl),
@@ -762,6 +764,7 @@ async function createOrder(
     data: {
       url: restaurantUrl,
       adminId: BigInt(tgUser.id),
+      menuVersion: MENU_PARSER_VERSION,
       placeSlug: menuSlug,
       placeName: info?.name || null,
       placeAddress: info?.address || null,

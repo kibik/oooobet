@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { parseSlug, fetchMenu, fetchPlaceInfo } from "@/lib/yandex-eda";
-import { detectProvider } from "@/lib/providers";
+import { detectProvider, MENU_PARSER_VERSION } from "@/lib/providers";
 import { money } from "@/lib/money";
 
 // When we last tried to (re)load a session's menu in this process. Menus cached
@@ -29,6 +29,7 @@ async function backfillMenu(sessionId: string): Promise<void> {
   });
   if (!session) return;
 
+
   // Ask the service the link belongs to; the Yandex parser knows nothing
   // about Deliveroo or Talabat pages.
   const provider = detectProvider(session.url);
@@ -44,6 +45,11 @@ async function backfillMenu(sessionId: string): Promise<void> {
   if (fresh.length === 0) return;
 
   const cachedCount = await prisma.menuItem.count({ where: { sessionId } });
+
+  await prisma.orderSession.update({
+    where: { id: sessionId },
+    data: { menuVersion: MENU_PARSER_VERSION },
+  });
 
   // Nothing cached, or a menu we stored only part of — write the whole thing
   if (cachedCount === 0 || fresh.length > cachedCount) {
@@ -137,10 +143,17 @@ export async function GET(
       orderBy: [{ categoryOrder: "asc" }, { category: "asc" }, { name: "asc" }],
     });
 
+    const session = await prisma.orderSession.findUnique({
+      where: { id },
+      select: { menuVersion: true },
+    });
+
     const needsBackfill =
       menuItems.length === 0 ||
       !menuItems.some((item) => item.description) ||
-      menuItems.every((item) => item.categoryOrder === 0);
+      menuItems.every((item) => item.categoryOrder === 0) ||
+      // A menu cached by an older parser may be missing dishes it now reads
+      (session?.menuVersion ?? 0) < MENU_PARSER_VERSION;
 
     if (needsBackfill && shouldTryBackfill(id)) {
       lastBackfillAt.set(id, Date.now());
