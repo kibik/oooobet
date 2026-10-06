@@ -462,6 +462,7 @@ async function writeMenuItems(
       name: item.name,
       price: item.price,
       oldPrice: item.oldPrice ?? null,
+      priceOnSelection: item.priceOnSelection ?? false,
       description: item.description,
       weight: item.weight,
       imageUrl: item.imageUrl,

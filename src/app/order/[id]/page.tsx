@@ -62,6 +62,7 @@ interface OrderSession {
   currency?: string;
   placeName?: string | null;
   placeAddress?: string | null;
+  conditions?: string | null;
   deadlineAt?: string | null;
   status: string;
   deliveryFee: number;
@@ -102,6 +103,8 @@ interface MenuItem {
   price: number;
   /** What the dish cost before the delivery service's own discount */
   oldPrice?: number | null;
+  /** Assembled from options, so it has no price until they are picked */
+  priceOnSelection?: boolean;
   description: string | null;
   weight: string | null;
   imageUrl: string | null;
@@ -134,6 +137,43 @@ export default function OrderPage({
     (value: number) => roundIn(value, session?.currency || "RUB"),
     [session?.currency]
   );
+  /** Price with the service's discount next to it, where there is one. */
+  const priceWithDiscount = (item: {
+    price: number;
+    oldPrice?: number | null;
+    priceOnSelection?: boolean;
+  }) => {
+    if (item.priceOnSelection)
+      return (
+        <span className="font-normal text-xs text-muted-foreground">
+          {t("priceOnSelection")}
+        </span>
+      );
+    const cut =
+      item.oldPrice != null && item.oldPrice > item.price
+        ? Math.round((1 - item.price / item.oldPrice) * 100)
+        : null;
+    return (
+      <>
+        {fmtPrice(item.price)}
+        {cut !== null && (
+          <>
+            <span className="font-normal text-xs text-muted-foreground line-through">
+              {fmtPrice(item.oldPrice!)}
+            </span>
+            <span className="font-semibold text-xs text-green-600 dark:text-green-500">
+              −{cut}%
+            </span>
+          </>
+        )}
+      </>
+    );
+  };
+
+  // Roubles are whole, dirhams have fils: a number input rejects 52.50 unless
+  // its step says fractions are allowed.
+  const moneyStep = !session?.currency || session.currency === "RUB" ? "1" : "0.01";
+
   // What to write next to an input: "₽" for roubles, "AED" for dirhams
   const unit = !session?.currency || session.currency === "RUB" ? "₽" : session.currency;
   // Dubai orders read in English; Russian ones are untouched
@@ -152,6 +192,10 @@ export default function OrderPage({
   // Manual input state
   const [showManualForm, setShowManualForm] = useState(false);
   const [dishName, setDishName] = useState("");
+  const [manualOptions, setManualOptions] = useState("");
+  const [conditionsDraft, setConditionsDraft] = useState<string | null>(null);
+  const [savingConditions, setSavingConditions] = useState(false);
+  const manualFormRef = useRef<HTMLFormElement | null>(null);
   const [price, setPrice] = useState("");
   const [adding, setAdding] = useState(false);
 
@@ -265,6 +309,20 @@ export default function OrderPage({
   const handleWantThis = (menuItem: MenuItem, e: React.MouseEvent) => {
     if (hasOptions(menuItem)) {
       openOptionsDialog(menuItem);
+      return;
+    }
+    // A dish assembled from options has no price of its own: the person picks
+    // it on the service's own site, so we take the name and ask for the rest.
+    if (menuItem.priceOnSelection) {
+      setShowManualForm(true);
+      setDishName(menuItem.name);
+      setPrice("");
+      setManualOptions("");
+      toast.info(t("pickOnSite"));
+      setTimeout(() => {
+        manualFormRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+        (manualFormRef.current?.querySelector("#price") as HTMLInputElement)?.focus();
+      }, 100);
       return;
     }
     flyProcessedRef.current = false;
@@ -425,6 +483,30 @@ export default function OrderPage({
 
   const handleMenuRowLeave = () => setHoverPreview(null);
 
+  const handleSaveConditions = async () => {
+    if (conditionsDraft === null) return;
+    setSavingConditions(true);
+    try {
+      const res = await fetch(`/api/orders/${id}/conditions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conditions: conditionsDraft }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setConditionsDraft(null);
+        toast.success(t("conditionsSaved"));
+        fetchOrder();
+      } else {
+        toast.error(data.error || t("errGeneric"));
+      }
+    } catch {
+      toast.error(t("errNetwork"));
+    } finally {
+      setSavingConditions(false);
+    }
+  };
+
   const handleAddManual = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!dishName.trim() || !price) return;
@@ -437,11 +519,13 @@ export default function OrderPage({
         body: JSON.stringify({
           dishName: dishName.trim(),
           price: Number(price),
+          options: manualOptions.trim() || undefined,
         }),
       });
       if (res.ok) {
         setDishName("");
         setPrice("");
+        setManualOptions("");
         toast.success(t("dishAdded"));
         fetchOrder();
       } else {
@@ -856,6 +940,65 @@ export default function OrderPage({
               )}
             </p>
 
+            {/* Conditions of the order: a capped discount, a minimum, a code */}
+            {conditionsDraft !== null ? (
+              <div className="mt-3 space-y-2">
+                <Label htmlFor="conditions" className="text-xs">
+                  {t("conditionsTitle")}
+                </Label>
+                <Input
+                  id="conditions"
+                  value={conditionsDraft}
+                  placeholder={t("conditionsHint")}
+                  onChange={(e) => setConditionsDraft(e.target.value)}
+                  className="h-9"
+                  maxLength={300}
+                />
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={handleSaveConditions}
+                    disabled={savingConditions}
+                  >
+                    {t("conditionsSave")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setConditionsDraft(null)}
+                  >
+                    ✕
+                  </Button>
+                </div>
+              </div>
+            ) : session.conditions ? (
+              <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/40 px-3 py-2">
+                <div className="text-xs font-medium text-amber-900 dark:text-amber-200">
+                  {t("conditionsTitle")}
+                </div>
+                <div className="text-sm text-amber-900 dark:text-amber-100 leading-snug">
+                  {session.conditions}
+                </div>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className="text-xs underline text-amber-900/70 dark:text-amber-200/70 mt-1"
+                    onClick={() => setConditionsDraft(session.conditions ?? "")}
+                  >
+                    {t("conditionsEdit")}
+                  </button>
+                )}
+              </div>
+            ) : isAdmin ? (
+              <button
+                type="button"
+                className="mt-3 text-xs underline text-muted-foreground"
+                onClick={() => setConditionsDraft("")}
+              >
+                {t("conditionsAdd")}
+              </button>
+            ) : null}
+
           </CardContent>
         </Card>
 
@@ -972,25 +1115,7 @@ export default function OrderPage({
                                     </span>
                                   )}
                                   <div className="font-semibold text-sm mt-0.5 flex items-center gap-1.5">
-                                    {fmtPrice(menuItem.price)}
-                                    {menuItem.oldPrice != null &&
-                                      menuItem.oldPrice > menuItem.price && (
-                                        <>
-                                          <span className="font-normal text-xs text-muted-foreground line-through">
-                                            {fmtPrice(menuItem.oldPrice)}
-                                          </span>
-                                          <span className="font-semibold text-xs text-green-600 dark:text-green-500">
-                                            −
-                                            {Math.round(
-                                              (1 -
-                                                menuItem.price /
-                                                  menuItem.oldPrice) *
-                                                100
-                                            )}
-                                            %
-                                          </span>
-                                        </>
-                                      )}
+                                    {priceWithDiscount(menuItem)}
                                   </div>
                                 </div>
 
@@ -1079,6 +1204,7 @@ export default function OrderPage({
                         </button>
                         {showManualForm && (
                           <form
+                            ref={manualFormRef}
                             onSubmit={handleAddManual}
                             className="space-y-3 mt-3"
                           >
@@ -1103,7 +1229,8 @@ export default function OrderPage({
                                 <Input
                                   id="price"
                                   type="number"
-                                  min="1"
+                                  step={moneyStep}
+                                  min={moneyStep}
                                   placeholder="590"
                                   value={price}
                                   onChange={(e) => setPrice(e.target.value)}
@@ -1111,6 +1238,18 @@ export default function OrderPage({
                                   className="h-9"
                                 />
                               </div>
+                            </div>
+                            <div className="space-y-1">
+                              <Label htmlFor="manualOptions" className="text-xs">
+                                {t("optionsLabel")}
+                              </Label>
+                              <Input
+                                id="manualOptions"
+                                placeholder={t("optionsPlaceholder")}
+                                value={manualOptions}
+                                onChange={(e) => setManualOptions(e.target.value)}
+                                className="h-9"
+                              />
                             </div>
                             <Button
                               type="submit"
@@ -1151,7 +1290,8 @@ export default function OrderPage({
                             <Input
                               id="price"
                               type="number"
-                              min="1"
+                              step={moneyStep}
+                              min={moneyStep}
                               placeholder="590"
                               value={price}
                               onChange={(e) => setPrice(e.target.value)}
@@ -1292,6 +1432,7 @@ export default function OrderPage({
                         <Input
                           id="deliveryFee"
                           type="number"
+                          step={moneyStep}
                           min="0"
                           placeholder="0"
                           value={deliveryFee}
@@ -1303,6 +1444,7 @@ export default function OrderPage({
                         <Input
                           id="serviceFee"
                           type="number"
+                          step={moneyStep}
                           min="0"
                           placeholder="0"
                           value={serviceFee}
@@ -1555,8 +1697,8 @@ export default function OrderPage({
                   {hoverPreview.item.description}
                 </p>
               )}
-              <div className="font-semibold text-sm pt-1">
-                {fmtPrice(hoverPreview.item.price)}
+              <div className="font-semibold text-sm pt-1 flex items-center gap-1.5">
+                {priceWithDiscount(hoverPreview.item)}
               </div>
             </div>
           </div>
@@ -1572,6 +1714,11 @@ export default function OrderPage({
           <DialogContent className="max-h-[85vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>{optionsItem?.name}</DialogTitle>
+              {optionsItem && (
+                <div className="font-semibold text-sm flex items-center gap-1.5">
+                  {priceWithDiscount(optionsItem)}
+                </div>
+              )}
               <DialogDescription>
                 {t("pickOptions")}
               </DialogDescription>

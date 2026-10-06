@@ -44,6 +44,8 @@ interface TalabatItem {
   price?: number;
   /** Price before the discount, or -1 when the dish is not on offer */
   oldPrice?: number;
+  /** The dish is assembled from options and has no price of its own */
+  hasChoices?: boolean;
   originalImage?: string | null;
   image?: string | null;
 }
@@ -131,7 +133,11 @@ export function parseMenuPage(html: string): ProviderMenu {
     for (const raw of category.items ?? []) {
       const name = raw.name?.trim();
       const price = Number(raw.price);
-      if (!name || !Number.isFinite(price) || price <= 0) continue;
+      // A dish built from options is priced 0 until they are picked. Dropping
+      // those lost whole sections — at Royal Orchid, two of the three curries.
+      const priceOnSelection = raw.hasChoices === true && !(price > 0);
+      if (!name) continue;
+      if (!priceOnSelection && (!Number.isFinite(price) || price <= 0)) continue;
       if (seen.has(name)) continue;
       seen.add(name);
 
@@ -139,9 +145,12 @@ export function parseMenuPage(html: string): ProviderMenu {
 
       items.push({
         name,
-        price,
+        price: priceOnSelection ? 0 : price,
+        priceOnSelection,
         oldPrice:
-          Number.isFinite(oldPrice) && oldPrice > price ? oldPrice : null,
+          !priceOnSelection && Number.isFinite(oldPrice) && oldPrice > price
+            ? oldPrice
+            : null,
         category: title,
         categoryOrder,
         description:

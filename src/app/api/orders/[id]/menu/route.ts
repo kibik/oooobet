@@ -56,6 +56,7 @@ async function backfillMenu(sessionId: string): Promise<void> {
         name: item.name,
         price: money(item.price),
         oldPrice: item.oldPrice ?? null,
+        priceOnSelection: item.priceOnSelection ?? false,
         description: item.description,
         weight: item.weight,
         imageUrl: item.imageUrl,
@@ -163,6 +164,7 @@ export async function GET(
         name: string;
         price: number;
         oldPrice: number | null;
+        priceOnSelection: boolean;
         description: string | null;
         weight: string | null;
         imageUrl: string | null;
@@ -179,6 +181,7 @@ export async function GET(
         name: item.name,
         price: money(item.price),
         oldPrice: item.oldPrice == null ? null : money(item.oldPrice),
+        priceOnSelection: item.priceOnSelection,
         description: item.description,
         weight: item.weight,
         imageUrl: item.imageUrl,

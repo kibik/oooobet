@@ -23,6 +23,8 @@ export interface ParsedMenuItem {
   price: number;
   /** Price before the service's own discount, when there is one */
   oldPrice?: number | null;
+  /** The dish is built from options, so its price is known only once chosen */
+  priceOnSelection?: boolean;
   description: string | null;
   weight: string | null;
   imageUrl: string | null;
